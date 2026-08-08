@@ -341,7 +341,9 @@ DANGEROUS_PATTERNS = [
     # these keys without --force (config.py #81101); this pattern additionally
     # gates the terminal path the same way sed/tee on config.yaml are gated, so
     # even an explicit --force variant is surfaced to the operator for approval.
-    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*config\s+set\s+(?:--force\s+)?(?:approvals|security|command_allowlist)\b',
+    # ``["']?`` covers the quoted key form the shell strips before the CLI sees
+    # it (``--force "approvals.mode" off``), so quoting cannot slip past the gate.
+    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*config\s+set\s+(?:--force\s+)?["\']?(?:approvals|security|command_allowlist)\b',
      "hermes config set on a security-policy key (approvals/security/command_allowlist)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval

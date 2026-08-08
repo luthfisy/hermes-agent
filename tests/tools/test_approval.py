@@ -1208,6 +1208,19 @@ class TestConfigSetSecurityPolicy:
             assert dangerous is True, cmd
             assert "security-policy" in desc, cmd
 
+    def test_quoted_security_policy_keys_detected(self):
+        # The shell strips quotes before the CLI sees the key, so quoting the
+        # key must not bypass the terminal gate either (triage finding).
+        for cmd in (
+            'hermes config set "approvals.mode" off',
+            'hermes config set --force "approvals.mode" off',
+            "hermes config set 'security.redact_secrets' false",
+            'hermes -p ade config set --force "command_allowlist" git',
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "security-policy" in desc, cmd
+
     def test_benign_config_set_not_flagged(self):
         for cmd in (
             "hermes config set terminal.backend docker",
