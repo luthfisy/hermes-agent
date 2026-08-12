@@ -84,6 +84,21 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     for extra in extras:
         if _is_dir(extra):
             candidates.append(str(extra))
+
+    # Package-manager install dirs: launchd's default PATH (/usr/bin:/bin:/usr/sbin:/sbin) and
+    # systemd's minimal unit PATH both omit them, so CLI tools installed via Homebrew/Linuxbrew
+    # (gh, jq, ffmpeg, ...) are invisible to cron job scripts and any subprocess launched from
+    # the running gateway service even though they resolve fine in an interactive shell.
+    for pm_dir in (
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/home/linuxbrew/.linuxbrew/bin",
+        "/home/linuxbrew/.linuxbrew/sbin",
+    ):
+        if _is_dir(Path(pm_dir)):
+            candidates.append(pm_dir)
     return candidates
 
 
@@ -211,7 +226,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries.extend(_gw()._build_user_local_paths(user_home, path_entries))
     path_entries.extend(_gw()._build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
-    sane_path = ":".join(path_entries)
+    # Dedupe: the candidates above can repeat /usr/local/{s,}bin already present in the fixed tail.
+    sane_path = ":".join(dict.fromkeys(path_entries))
     return f"""[Unit]
 Description={_gw().SERVICE_DESCRIPTION}
 After=network-online.target
@@ -265,11 +281,26 @@ def _strip_optional_systemd_directives(text: str) -> str:
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
-    """Normalize plist text for staleness checks, ignoring the PATH payload: the generated PATH is
-    captured from the invoking shell and varies across shells."""
+    """Ignore ambient shell PATH drift while retaining managed package dirs.
+
+    The managed markers make an older minimal-PATH plist stale exactly once when
+    Homebrew/Linuxbrew directories exist, so ``launchd_install`` refreshes it.
+    """
     import re
+
+    managed = (
+        "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+        "/usr/local/sbin", "/home/linuxbrew/.linuxbrew/bin",
+        "/home/linuxbrew/.linuxbrew/sbin",
+    )
+
+    def _path_marker(match: re.Match) -> str:
+        entries = set(match.group(2).split(":"))
+        present = ",".join(path for path in managed if path in entries)
+        return f"{match.group(1)}__HERMES_PATH__[{present}]{match.group(3)}"
+
     return re.sub(
-        r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", r"\1__HERMES_PATH__\3",
+        r"(<key>PATH</key>\s*<string>)(.*?)(</string>)", _path_marker,
         _gw()._normalize_service_definition(text), flags=re.S,
     )
 
