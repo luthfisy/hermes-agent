@@ -621,7 +621,13 @@ def estimate_usage_cost(
     if route.provider == "deepseek":
         now = _UTC_NOW()
         if now < _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC:
-            entry = _DEEPSEEK_LEGACY_FLAT_RATES.get(route.model.lower(), entry)
+            # Pre-switchover: use the legacy flat card. Every model in the
+            # snapshot is mapped there; a future deepseek model must be
+            # added to _DEEPSEEK_LEGACY_FLAT_RATES before the switchover or
+            # it falls back to the new-card rates below.
+            legacy = _DEEPSEEK_LEGACY_FLAT_RATES.get(route.model.lower())
+            if legacy is not None:
+                entry = legacy
         elif now.hour in _DEEPSEEK_PEAK_HOURS:
             deepseek_peak_hour = True
 
