@@ -1024,8 +1024,8 @@ def _refuse_sensitive_config_key(key: str, *, hint: str) -> None:
     )
     if key == "approvals.mode":
         print(
-            "  Use `hermes approvals [manual|smart|off]` to change the "
-            "approval mode.",
+            "  Use the /approvals slash command (manual|smart|off) to change "
+            "the approval mode.",
             file=sys.stderr,
         )
     else:
@@ -3691,13 +3691,15 @@ def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:
     return "\n".join(lines)
 
 
-def set_config_value(key: str, value: str, force: bool = False):
+def set_config_value(key: str, value: str, force: bool = False, *, approval_override: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
     ``force`` writes a known key given under the wrong prefix (``gateway.discord.foo`` where
     ``discord.foo`` is known; otherwise refused — any other unknown path under a known section
     is written with a did-you-mean notice), skips the unknown-top-level-key notice AND
     authorizes replacing a mapping section with a scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
-    to ``model.default``."""
+    to ``model.default``. ``approval_override`` is the dedicated authorization for the sanctioned
+    /approvals command only (approval_mode.py) — generic ``force`` never authorizes
+    security-policy writes (#81108)."""
     if is_managed():
         managed_error("set configuration values")
         return
@@ -3711,12 +3713,15 @@ def set_config_value(key: str, value: str, force: bool = False):
     _exit_if_key_managed(key, "set")
     # Security-policy guard (#81101): approvals.*, security.* and
     # command_allowlist change the effective security policy mid-session.
-    # force=True is honored ONLY by the in-process user-mediated canonical
-    # path (`hermes approvals` / /approvals → approval_mode.py); the CLI
-    # never forwards --force for sensitive keys (config_command refuses them
-    # at every form), so no agent-reachable invocation can weaken the policy
-    # without an operator in the loop. See review on #81108.
-    if _is_sensitive_config_key(key) and not force:
+    # Mutation authorization is independent of invocation form: generic
+    # ``force`` (``hermes config set --force``) is deliberately NOT
+    # sufficient — only the dedicated approval_override flag, used
+    # exclusively by the user-mediated /approvals command
+    # (hermes_cli/approval_mode.py), may mutate them. The CLI additionally
+    # refuses sensitive keys at every form in config_command, so no
+    # agent-reachable invocation can weaken the policy without an operator
+    # in the loop (#81108).
+    if _is_sensitive_config_key(key) and not approval_override:
         _refuse_sensitive_config_key(key, hint="set")
     if _is_env_config_key(key):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
