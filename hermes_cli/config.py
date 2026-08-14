@@ -1030,8 +1030,13 @@ def _refuse_sensitive_config_key(key: str, *, hint: str) -> None:
         )
     else:
         print(
-            "  Use `hermes config set --force <key> <value>` to override, or "
-            "edit ~/.hermes/config.yaml directly.",
+            "  Security-policy keys cannot be changed via `hermes config set` "
+            "(with or without --force).",
+            file=sys.stderr,
+        )
+        print(
+            "  Edit config.yaml directly, or use the dedicated command where "
+            "one exists (e.g. `hermes approvals` for approvals.mode).",
             file=sys.stderr,
         )
     sys.exit(1)
@@ -3705,10 +3710,12 @@ def set_config_value(key: str, value: str, force: bool = False):
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
     # Security-policy guard (#81101): approvals.*, security.* and
-    # command_allowlist change the effective security policy mid-session. Only
-    # an explicit --force (an operator typing the override at the CLI) may
-    # mutate them — the canonical operator paths (e.g. `hermes approvals`) pass
-    # force=True.
+    # command_allowlist change the effective security policy mid-session.
+    # force=True is honored ONLY by the in-process user-mediated canonical
+    # path (`hermes approvals` / /approvals → approval_mode.py); the CLI
+    # never forwards --force for sensitive keys (config_command refuses them
+    # at every form), so no agent-reachable invocation can weaken the policy
+    # without an operator in the loop. See review on #81108.
     if _is_sensitive_config_key(key) and not force:
         _refuse_sensitive_config_key(key, hint="set")
     if _is_env_config_key(key):
@@ -3965,6 +3972,18 @@ def _cmd_config_set(args):
     value = getattr(args, 'value', None)
     if not key or value is None:
         _usage_exit(*_USAGE_SET)
+    # Security-policy guard (#81101): refuse sensitive keys at EVERY CLI
+    # form. --force is a non-sensitive-key escape hatch (unknown-key
+    # notice / scalar-over-mapping); it must not become a security-policy
+    # override, or an agent typing `hermes config set --force
+    # approvals.mode off` into the terminal would disable the approval
+    # gate with no operator confirmation (the one-command bypass the
+    # file-tool deny exists to prevent). The in-process user-mediated
+    # path (`hermes approvals` / /approvals) is the only sanctioned way
+    # to change approvals.mode; everything else edits config.yaml
+    # directly. See review on #81108.
+    if _is_sensitive_config_key(key):
+        _refuse_sensitive_config_key(key, hint="set")
     _run_write_command(set_config_value, key, value, bool(getattr(args, 'force', False)))
 
 
