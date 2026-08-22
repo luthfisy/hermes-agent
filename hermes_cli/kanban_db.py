@@ -1098,6 +1098,25 @@ def _host_prefix() -> str:
     return f"{_claimer_id().split(':', 1)[0]}:"
 
 
+def _with_operator(
+    operator: Optional[str], payload: Optional[dict]
+) -> Optional[dict]:
+    """Return ``payload`` with an additive ``operator`` key (issue #82689).
+
+    Operator attribution on state-changing events must never change what
+    existing consumers see: callers that don't pass an operator get the
+    exact legacy payload back (unchanged rows/keys), while callers that do
+    get a copy with one extra ``operator`` key. The value is a surface-
+    prefixed identity string, e.g. ``cli:<user>@<host>``,
+    ``dashboard:<session>``, or ``dispatcher:<host:pid>``.
+    """
+    if not operator:
+        return payload
+    merged = dict(payload) if payload else {}
+    merged["operator"] = operator
+    return merged
+
+
 # --- Task creation / mutation ---
 
 def _validate_model_override(model: Optional[str], provider: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -1543,8 +1562,18 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
-def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
-    """Assign/reassign; raises RuntimeError while the task is running under a claim."""
+def assign_task(
+    conn: sqlite3.Connection, task_id: str, profile: Optional[str],
+    *,
+    operator: Optional[str] = None,
+) -> bool:
+    """Assign/reassign; raises RuntimeError while the task is running under a claim.
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``assigned`` event payload (issue #82689) — e.g.
+    ``cli:<user>@<host>`` or ``dashboard:<session>``. Omitting it produces
+    the exact legacy payload (no new key), so old consumers are unaffected.
+    """
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
@@ -1568,7 +1597,8 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         # ``from`` lets the respawn guard tell a real handoff (dev→closer) from
         # a no-op re-assign or an unassign, which must not lift ``active_pr``.
         _append_event(
-            conn, task_id, "assigned", {"assignee": profile, "from": row["assignee"]},
+            conn, task_id, "assigned",
+            _with_operator(operator, {"assignee": profile, "from": row["assignee"]}),
         )
     # Observer fires AFTER commit so subscribers see durable state.
     notify_task_updated(conn, task_id, ("assignee",))
@@ -2262,11 +2292,17 @@ def _claim_and_open_run(
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``claimed`` event payload (issue #82689); the
+    dispatcher passes ``dispatcher:<host:pid>``. Omitting it produces the
+    exact legacy payload.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2286,7 +2322,10 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(
+            conn, task_id, "ready", lock, expires, now,
+            event_extra={"operator": operator} if operator else None,
+        )
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2297,10 +2336,17 @@ def claim_task(
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
-    separately from the implementer."""
+    separately from the implementer.
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``claimed`` event payload (issue #82689); the
+    dispatcher passes ``dispatcher:<host:pid>``. Omitting it produces the
+    exact legacy payload.
+    """
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2317,7 +2363,11 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={
+                "source_status": "review",
+                **({"operator": operator} if operator else {}),
+            },
         )
         if run_id is None:
             return None
@@ -2593,15 +2643,19 @@ def reclaim_task(
 def reassign_task(
     conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, reclaim_first: bool = False,
     reason: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> bool:
     """Reassign (None unassigns); a running task is refused unless
-    ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
+    ``reclaim_first`` releases its claim — the "this profile's model is broken" path.
+
+    ``operator`` rides the ``assigned`` event payload additively (issue #82689).
+    """
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile)
+        return assign_task(conn, task_id, profile, operator=operator)
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.
@@ -2712,6 +2766,7 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
+    operator: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2725,6 +2780,11 @@ def complete_task(
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
+
+    ``operator`` is an optional surface-prefixed identity string recorded
+    additively on the ``completed`` event payload (issue #82689) — e.g.
+    ``cli:<user>@<host>`` for a manual completion or ``worker:...`` from a
+    spawned worker. Omitting it produces the exact legacy payload.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2795,7 +2855,10 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _with_operator(
+                operator,
+                _completed_event_payload(result, event_summary, verified_cards, metadata),
+            ),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
