@@ -2257,16 +2257,19 @@ def copilot_model_api_mode(
         return "codex_responses"
 
     # Copilot Claude uses the provider's OpenAI-compatible chat transport,
-    # never Hermes' native Anthropic or Responses adapters. Keep that invariant
-    # ahead of generic catalog endpoint handling.
+    # never Hermes' native Anthropic or Responses adapters. The live catalog
+    # may advertise /v1/messages, but the Copilot token/header scheme is
+    # handled by the OpenAI client path; selecting anthropic_messages would
+    # send the wrong auth/wire shape. Keep that invariant ahead of generic
+    # catalog endpoint handling.
     if normalized.lower().startswith(("claude-", "anthropic/claude-")):
         return "chat_completions"
 
     # Catalog-driven fallback for models the pattern check does not cover.
     # Copilot advertises the accepted wire endpoint per model and rejects a
     # mismatch with ``unsupported_api_for_model``. Only upgrade a non-GPT
-    # model when it is explicitly Responses-only; Claude models remain on
-    # Copilot's OpenAI-compatible chat path even when /v1/messages is listed.
+    # model when it is explicitly Responses-only; dual-endpoint models stay
+    # on the existing chat_completions path.
     catalog_entry = next(
         (
             item
@@ -2286,11 +2289,7 @@ def copilot_model_api_mode(
             and "/chat/completions" not in supported_endpoints
         ):
             return "codex_responses"
-    # Copilot's Claude models are exposed through its OpenAI-compatible chat
-    # endpoint, not through Hermes' native Anthropic adapter. The live catalog may
-    # advertise /v1/messages, but the Copilot token/header scheme is handled by
-    # the OpenAI client path; selecting anthropic_messages would send the wrong
-    # auth/wire shape. Keep non-GPT Copilot slots on chat_completions.
+
     return "chat_completions"
 
 
