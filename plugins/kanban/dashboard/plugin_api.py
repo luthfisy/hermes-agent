@@ -681,7 +681,11 @@ def _dashboard_operator() -> str:
     must not leak into the audit log. When plugin_api runs outside the
     dashboard server process (tests, direct ASGI mounts) there is no token
     to hash, so identity falls back to the serving process's ``host:pid``.
-    Cached per-process; the token is fixed for the server's lifetime.
+    A token-derived identity is cached per-process because the token is fixed
+    for the server's lifetime.  The fallback is deliberately not cached: this
+    module can be imported before ``web_server`` creates ``_SESSION_TOKEN``,
+    and freezing a ``host:pid`` fallback would misattribute every later call
+    once a real token exists (#82689 follow-up, credit @benperry6).
     """
     global _DASHBOARD_OPERATOR
     if _DASHBOARD_OPERATOR:
@@ -694,15 +698,14 @@ def _dashboard_operator() -> str:
     if token:
         session = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:12]
         operator = f"dashboard:{session}"
-    else:
-        try:
-            host = socket.gethostname() or "unknown"
-        except Exception:
-            host = "unknown"
-        operator = f"dashboard:{host}:{os.getpid()}"
+        _DASHBOARD_OPERATOR = operator
+        return operator
 
-    _DASHBOARD_OPERATOR = operator
-    return operator
+    try:
+        host = socket.gethostname() or "unknown"
+    except Exception:
+        host = "unknown"
+    return f"dashboard:{host}:{os.getpid()}"
 
 
 def _profile_exists(name: Optional[str]) -> Optional[bool]:
