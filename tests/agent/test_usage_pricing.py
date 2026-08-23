@@ -215,6 +215,20 @@ def test_deepseek_peak_hour_boundaries_after_switchover(monkeypatch):
         assert any("peak" in note for note in result.notes) == peak, f"hour {hour}"
 
 
+def test_deepseek_peak_hours_off_on_weekends(monkeypatch):
+    """Peak hours only apply Monday through Friday; weekends are always off-peak."""
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    off_peak = Decimal("0.88")  # flash: $0.22 in + $0.66 out per 1M
+    # 2026-08-22 is Saturday (isoweekday=6), 2026-08-23 is Sunday (isoweekday=7)
+    for day, weekday_name in [(22, "Saturday"), (23, "Sunday")]:
+        for hour in [1, 2, 3, 6, 7, 8, 9]:  # peak hours on weekdays
+            now = datetime(2026, 8, day, hour, 30, tzinfo=timezone.utc)
+            monkeypatch.setattr(usage_pricing, "_UTC_NOW", lambda: now)
+            result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
+            assert result.amount_usd == off_peak, f"{weekday_name} hour {hour}"
+            assert not any("peak" in note for note in result.notes), f"{weekday_name} hour {hour}"
+
+
 def test_deepseek_peak_window_edges_cross_midnight(monkeypatch):
     """Exact window-edge timestamps: 00:59:59 off-peak, 01:00 peak,
     03:59:59 peak, 04:00 off-peak, 09:59:59 peak, 10:00 off-peak."""
