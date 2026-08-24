@@ -140,6 +140,12 @@ _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC = datetime(2026, 8, 16, 16, 0, tzinfo=timez
 # hours 1, 2, 3 and 6, 7, 8, 9.  ISO weekday 1–5 = Mon–Fri.
 _DEEPSEEK_PEAK_HOURS = frozenset({1, 2, 3, 6, 7, 8, 9})
 _DEEPSEEK_PEAK_DAYS = frozenset({1, 2, 3, 4, 5})
+# The weekday is read in UTC, but DeepSeek's "Monday through Friday" is
+# Beijing time.  This is safe because both peak windows (01:00–04:00 and
+# 06:00–10:00 UTC) fall entirely inside the region where UTC and Beijing
+# dates agree (Beijing is UTC+8; the dates disagree only at 16:00–24:00
+# UTC).  If DeepSeek ever moves a peak hour to 16:00+ UTC, the weekday
+# must be read in Asia/Shanghai instead.
 
 # Pre-switchover flat card (deepseek-pricing-2026-07). The 2026-08-16 rate
 # card stores OFF-PEAK rates in the snapshot and bills 2x during peak hours;
