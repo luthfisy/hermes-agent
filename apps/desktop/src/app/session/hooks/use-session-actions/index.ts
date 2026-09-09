@@ -176,6 +176,7 @@ import {
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
+  toBranchSeedMessages,
   upsertOptimisticSession,
   upsertUnlistedSessionOwner
 } from './utils'
@@ -2327,7 +2328,7 @@ export function useSessionActions({
                   source: 'desktop',
                   ...(cwd && { cwd }),
                   ...(profile ? { profile } : {}),
-                  messages: branchMessages.map(({ content, role }) => ({ content, role })),
+                  messages: toBranchSeedMessages(branchMessages),
                   ...(parentStoredId && { parent_session_id: parentStoredId })
                 })
           ).catch(err => {
