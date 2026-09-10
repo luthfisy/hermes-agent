@@ -184,14 +184,14 @@ class TestEstimateCost:
         monkeypatch.setattr(
             usage_pricing,
             "_UTC_NOW",
-            lambda: datetime(2026, 8, 17, 2, 0, tzinfo=timezone.utc),
+            lambda: datetime(2026, 9, 14, 2, 0, tzinfo=timezone.utc),
         )
         cost, status = _estimate_cost(session)
         assert status == "estimated"
         assert cost == pytest.approx(0.42, abs=0.0001)  # legacy flat card
         # Post-switchover session in a peak hour → 2x off-peak.
         session["started_at"] = datetime(
-            2026, 8, 17, 2, 0, tzinfo=timezone.utc
+            2026, 9, 14, 2, 0, tzinfo=timezone.utc
         ).timestamp()
         cost, status = _estimate_cost(session)
         assert cost == pytest.approx(1.50, abs=0.0001)

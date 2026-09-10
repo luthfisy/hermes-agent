@@ -147,13 +147,18 @@ _DEEPSEEK_PEAK_DAYS = frozenset({1, 2, 3, 4, 5})
 # UTC).  If DeepSeek ever moves a peak hour to 16:00+ UTC, the weekday
 # must be read in Asia/Shanghai instead.
 
-# Pre-switchover flat card (deepseek-pricing-2026-07): DeepSeek billed a flat
-# rate until 2026-08-16T16:00Z.  The snapshot holds the current card's OFF-PEAK
-# rates and bills 2x during peak hours; this legacy card keeps estimates
-# accurate for sessions that ran before the switchover, so it stays as long as
-# those sessions can be re-priced.  Sessions billed between the switchover and
-# the 2026-09-10 card are priced on the current snapshot: the two events are
-# separate, and DeepSeek publishes no effective instant for the newer sheet.
+# 12:00 Beijing on 2026-09-10 — DeepSeek's Flash re-pricing announcement
+# ("effective from 12:00 Beijing Time on September 10, 2026").  Beijing is
+# UTC+8, so the instant is 04:00 UTC.  Hour 4 is off-peak, so the card change
+# and the peak window boundary do not interact.
+_DEEPSEEK_V41_CARD_EFFECTIVE_UTC = datetime(2026, 9, 10, 4, 0, tzinfo=timezone.utc)
+
+# Cards DeepSeek billed before the live snapshot: the flat card until
+# 2026-08-16T16:00Z, then the 2026-08-16 peak/off-peak card until the
+# 2026-09-10 sheet replaced it (Flash only — the Pro rates are unchanged).
+# The snapshot holds the current card's OFF-PEAK rates and bills 2x during
+# peak hours; these older cards keep estimates accurate for the sessions that
+# ran under them, so they stay as long as those sessions can be re-priced.
 _DEEPSEEK_LEGACY_FLASH_ENTRY = PricingEntry(
     input_cost_per_million=Decimal("0.14"),
     output_cost_per_million=Decimal("0.28"),
@@ -176,6 +181,45 @@ _DEEPSEEK_LEGACY_FLAT_RATES: Dict[str, PricingEntry] = {
     "deepseek-v4-flash": _DEEPSEEK_LEGACY_FLASH_ENTRY,
     "deepseek-v4-pro": _DEEPSEEK_LEGACY_PRO_ENTRY,
 }
+# The 2026-08-16 card (OFF-PEAK rates; peak hours bill 2x).  Pro is unchanged
+# in the 2026-09-10 sheet, Flash is not.
+_DEEPSEEK_2026_08_16_FLASH_ENTRY = PricingEntry(
+    input_cost_per_million=Decimal("0.22"),
+    output_cost_per_million=Decimal("0.66"),
+    cache_read_cost_per_million=Decimal("0.007"),
+    source="official_docs_snapshot",
+    source_url="https://api-docs.deepseek.com/quick_start/pricing",
+    pricing_version="deepseek-pricing-2026-08-16",
+)
+_DEEPSEEK_2026_08_16_PRO_ENTRY = PricingEntry(
+    input_cost_per_million=Decimal("0.66"),
+    output_cost_per_million=Decimal("1.98"),
+    cache_read_cost_per_million=Decimal("0.022"),
+    source="official_docs_snapshot",
+    source_url="https://api-docs.deepseek.com/quick_start/pricing",
+    pricing_version="deepseek-pricing-2026-08-16",
+)
+_DEEPSEEK_2026_08_16_RATES: Dict[str, PricingEntry] = {
+    "deepseek-chat": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
+    "deepseek-reasoner": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
+    "deepseek-v4-flash": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
+    "deepseek-v4-pro": _DEEPSEEK_2026_08_16_PRO_ENTRY,
+}
+# (billed from, billed until, per-model entries), oldest first.  The live
+# snapshot is the card in force once no row matches.
+_DEEPSEEK_HISTORICAL_CARDS: tuple[tuple[Optional[datetime], datetime, Dict[str, PricingEntry]], ...] = (
+    (None, _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC, _DEEPSEEK_LEGACY_FLAT_RATES),
+    (_DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC, _DEEPSEEK_V41_CARD_EFFECTIVE_UTC, _DEEPSEEK_2026_08_16_RATES),
+)
+
+
+def _deepseek_card_entry(model: str, now: datetime) -> Optional[PricingEntry]:
+    """The card DeepSeek billed ``model`` under at ``now``, or ``None`` when the
+    live snapshot is the card in force (i.e. ``now`` is past every dated card)."""
+    for start, until, rates in _DEEPSEEK_HISTORICAL_CARDS:
+        if (start is None or now >= start) and now < until:
+            return rates.get(model)
+    return None
 
 
 def _snap(
@@ -636,27 +680,31 @@ def estimate_usage_cost(
     if not entry:
         return _unknown_cost("none")
 
-    # DeepSeek switched to peak/off-peak billing at 2026-08-16T16:00Z.
-    # Before the switchover the legacy flat card applies; after it, the
-    # snapshot's off-peak rates bill at 2x during peak hours
-    # (01:00-04:00 and 06:00-10:00 UTC, Monday through Friday). The rate
-    # is selected at call time (post-request), matching DeepSeek's
-    # per-request timestamp billing; pass billing_time to price a
-    # historical moment instead (insights re-estimation of past sessions).
-    # Resolved before the context-tier read so ``above`` is measured against
-    # the rate card that actually bills the request.
+    # DeepSeek switched to peak/off-peak billing at 2026-08-16T16:00Z, then
+    # re-priced Flash on 2026-09-10, so the card in force depends on when the
+    # tokens were consumed: the dated cards above cover the earlier sheets and
+    # the snapshot is the live one.  Since 2026-08-16 the card's off-peak rates
+    # bill at 2x during peak hours (01:00-04:00 and 06:00-10:00 UTC, Monday
+    # through Friday); the pre-switchover flat card has no peak tier.  The rate
+    # is selected at call time (post-request), matching DeepSeek's per-request
+    # timestamp billing; pass billing_time to price a historical moment instead
+    # (insights re-estimation of past sessions).  Resolved before the
+    # context-tier read so ``above`` is measured against the card that actually
+    # bills the request.
     deepseek_peak_hour = False
     if route.provider == "deepseek":
         now = billing_time if billing_time is not None else _UTC_NOW()
-        if now < _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC:
-            # Pre-switchover: use the legacy flat card. Every model in the
-            # snapshot is mapped there; a future deepseek model must be
-            # added to _DEEPSEEK_LEGACY_FLAT_RATES before the switchover or
-            # it falls back to the new-card rates below.
-            legacy = _DEEPSEEK_LEGACY_FLAT_RATES.get(route.model.lower())
-            if legacy is not None:
-                entry = legacy
-        elif now.isoweekday() in _DEEPSEEK_PEAK_DAYS and now.hour in _DEEPSEEK_PEAK_HOURS:
+        dated = _deepseek_card_entry(route.model.lower(), now)
+        if dated is not None:
+            # A model the snapshot has but the dated card does not falls back
+            # to the snapshot rates — add it to the dated card when DeepSeek
+            # bills it under that card.
+            entry = dated
+        if (
+            now >= _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC
+            and now.isoweekday() in _DEEPSEEK_PEAK_DAYS
+            and now.hour in _DEEPSEEK_PEAK_HOURS
+        ):
             deepseek_peak_hour = True
 
     # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
