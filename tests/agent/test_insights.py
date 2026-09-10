@@ -227,6 +227,9 @@ class TestDeepSeekPeakBillingTimeInvariance:
 
     @staticmethod
     def _seed_deepseek_session(db, started_at):
+        """Seed a session and return its ``started_at`` so callers can derive a
+        query window that contains it (the timestamp is a fixed instant, and a
+        hardcoded ``days=30`` window would drop it as wall-clock time advances)."""
         db.create_session(
             session_id="ds1", source="cli",
             model="deepseek-v4-flash", user_id="user1",
@@ -242,6 +245,7 @@ class TestDeepSeekPeakBillingTimeInvariance:
             "ds1", input_tokens=1_000_000, output_tokens=1_000_000
         )
         db._conn.commit()
+        return started_at
 
     def test_overview_cost_invariant_to_report_time(self, db, monkeypatch):
         """Pre-switchover session bills at the legacy flat card ($0.14+$0.28)
@@ -249,11 +253,13 @@ class TestDeepSeekPeakBillingTimeInvariance:
         _compute_overview is called with models=None so the per-session
         estimation loop is the path under test (generate() overrides the
         overview total with the model-breakdown sum when models are given)."""
-        self._seed_deepseek_session(
+        started_at = self._seed_deepseek_session(
             db, datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc).timestamp()
         )
         engine = InsightsEngine(db)
-        cutoff = time.time() - 30 * 86400
+        # Window derived from the seeded instant, not from "now": the fixture
+        # timestamp is fixed and 30 days would eventually exclude it.
+        cutoff = started_at - 86400
         sessions = engine._get_sessions(cutoff)
         assert sessions, "expected the seeded deepseek session"
         message_stats = engine._get_message_stats(cutoff)
@@ -276,13 +282,16 @@ class TestDeepSeekPeakBillingTimeInvariance:
         session's started_at — exercises the s.started_at SELECT addition.
         update_token_counts already writes the usage row, so no explicit
         insert is needed."""
-        self._seed_deepseek_session(
+        started_at = self._seed_deepseek_session(
             db, datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc).timestamp()
         )
         rows = db._conn.execute(
             "SELECT session_id FROM session_model_usage WHERE session_id = 'ds1'"
         ).fetchall()
         assert rows, "expected update_token_counts to write a usage row"
+        # Span from the seeded instant to now so the fixed timestamp stays
+        # inside generate()'s window however much wall-clock time passes.
+        days = int((time.time() - started_at) / 86400) + 2
         costs = []
         for report_hour in (2, 12):
             monkeypatch.setattr(
@@ -292,7 +301,7 @@ class TestDeepSeekPeakBillingTimeInvariance:
                     2026, 8, 17, report_hour, 0, tzinfo=timezone.utc
                 ),
             )
-            report = InsightsEngine(db).generate(days=30)
+            report = InsightsEngine(db).generate(days=days)
             costs.append(sum(m["cost"] for m in report["models"]))
         assert costs[0] == pytest.approx(costs[1], abs=0.0001)
         assert costs[0] == pytest.approx(0.42, abs=0.0001)
