@@ -610,6 +610,14 @@ def estimate_usage_cost(
     normalized to UTC before hour selection. Default (None) prices at
     call time via ``_UTC_NOW()``, which is correct for live callers.
     """
+    # Validated up front so the contract holds for every route: a naive
+    # datetime is a caller error, not something to silently ignore when the
+    # route happens to have no time-of-day pricing.
+    if billing_time is not None:
+        if billing_time.tzinfo is None:
+            raise ValueError("billing_time must be timezone-aware (UTC)")
+        billing_time = billing_time.astimezone(timezone.utc)
+
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
     reported = profile.get_usage_cost(model_name, usage) if profile else None
@@ -626,10 +634,6 @@ def estimate_usage_cost(
     if not entry:
         return _unknown_cost("none")
 
-    # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
-    # threshold the *_above rates apply to the entire request; None falls back.
-    above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
-
     # DeepSeek switched to peak/off-peak billing at 2026-08-16T16:00Z.
     # Before the switchover the legacy flat card applies; after it, the
     # snapshot's off-peak rates bill at 2x during peak hours
@@ -637,14 +641,11 @@ def estimate_usage_cost(
     # is selected at call time (post-request), matching DeepSeek's
     # per-request timestamp billing; pass billing_time to price a
     # historical moment instead (insights re-estimation of past sessions).
+    # Resolved before the context-tier read so ``above`` is measured against
+    # the rate card that actually bills the request.
     deepseek_peak_hour = False
     if route.provider == "deepseek":
-        if billing_time is not None:
-            if billing_time.tzinfo is None:
-                raise ValueError("billing_time must be timezone-aware (UTC)")
-            now = billing_time.astimezone(timezone.utc)
-        else:
-            now = _UTC_NOW()
+        now = billing_time if billing_time is not None else _UTC_NOW()
         if now < _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC:
             # Pre-switchover: use the legacy flat card. Every model in the
             # snapshot is mapped there; a future deepseek model must be
@@ -655,6 +656,10 @@ def estimate_usage_cost(
                 entry = legacy
         elif now.isoweekday() in _DEEPSEEK_PEAK_DAYS and now.hour in _DEEPSEEK_PEAK_HOURS:
             deepseek_peak_hour = True
+
+    # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
+    # threshold the *_above rates apply to the entire request; None falls back.
+    above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
 
     amount = _ZERO
     for tokens, rate, rate_above, note in (

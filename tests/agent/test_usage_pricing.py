@@ -379,15 +379,18 @@ def test_deepseek_billing_time_prices_historical_moment(monkeypatch):
 
 def test_deepseek_billing_time_rejects_naive_datetime():
     """A naive billing_time would compare against an aware constant and
-    either raise TypeError or silently misprice — fail loudly instead."""
+    either raise TypeError or silently misprice — fail loudly instead. The
+    check runs before provider branching, so it exempts no route."""
     usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
-    with pytest.raises(ValueError):
-        estimate_usage_cost(
-            "deepseek-v4-flash",
-            usage,
-            provider="deepseek",
-            billing_time=datetime(2026, 8, 17, 2, 0),  # naive
-        )
+    naive = datetime(2026, 8, 17, 2, 0)  # naive
+    for model, provider in (("deepseek-v4-flash", "deepseek"), ("gpt-5.6-luna", "openai")):
+        with pytest.raises(ValueError):
+            estimate_usage_cost(
+                model,
+                usage,
+                provider=provider,
+                billing_time=naive,
+            )
 
 
 def test_deepseek_billing_time_normalized_to_utc():
