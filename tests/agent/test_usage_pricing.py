@@ -201,7 +201,7 @@ def test_deepseek_peak_hour_boundaries_after_switchover(monkeypatch):
     """Peak windows are half-open [01:00, 04:00) and [06:00, 10:00) UTC:
     hours 1, 2, 3 and 6, 7, 8, 9 are peak; 0, 4, 5, 10+ are off-peak."""
     usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
-    off_peak = Decimal("0.88")  # flash: $0.22 in + $0.66 out per 1M
+    off_peak = Decimal("0.75")  # flash: $0.15 in + $0.60 out per 1M
     for hour, peak in [
         (0, False), (1, True), (2, True), (3, True), (4, False),
         (5, False), (6, True), (7, True), (8, True), (9, True),
@@ -218,7 +218,7 @@ def test_deepseek_peak_hour_boundaries_after_switchover(monkeypatch):
 def test_deepseek_peak_hours_off_on_weekends(monkeypatch):
     """Peak hours only apply Monday through Friday; weekends are always off-peak."""
     usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
-    off_peak = Decimal("0.88")  # flash: $0.22 in + $0.66 out per 1M
+    off_peak = Decimal("0.75")  # flash: $0.15 in + $0.60 out per 1M
     # 2026-08-22 is Saturday (isoweekday=6), 2026-08-23 is Sunday (isoweekday=7)
     for day, weekday_name in [(22, "Saturday"), (23, "Sunday")]:
         for hour in [1, 2, 3, 6, 7, 8, 9]:  # peak hours on weekdays
@@ -243,15 +243,15 @@ def test_deepseek_peak_window_edges_cross_midnight(monkeypatch):
         now = datetime(2026, 8, 17, h, m, s, tzinfo=timezone.utc)
         monkeypatch.setattr(usage_pricing, "_UTC_NOW", lambda: now)
         result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
-        expected = Decimal("0.88") * (Decimal("2") if peak else Decimal("1"))
+        expected = Decimal("0.75") * (Decimal("2") if peak else Decimal("1"))
         assert result.amount_usd == expected, stamp
 
 
 def test_deepseek_off_peak_and_peak_amounts_match_official_table(monkeypatch):
-    """1M input (cache miss) + 1M output at the official 2026-08-16 rates."""
+    """1M input (cache miss) + 1M output at the official off-peak rates."""
     usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
     for model, off_peak, peak in [
-        ("deepseek-v4-flash", "0.88", "1.76"),  # $0.22 + $0.66; 2x
+        ("deepseek-v4-flash", "0.75", "1.50"),  # $0.15 + $0.60; 2x
         ("deepseek-v4-pro", "2.64", "5.28"),  # $0.66 + $1.98; 2x
     ]:
         monkeypatch.setattr(
@@ -271,7 +271,7 @@ def test_deepseek_off_peak_and_peak_amounts_match_official_table(monkeypatch):
 
 
 def test_deepseek_cache_read_scales_at_peak(monkeypatch):
-    """Cache-hit input also bills at 2x during peak (flash $0.007 -> $0.014)."""
+    """Cache-hit input also bills at 2x during peak (flash $0.003 -> $0.006)."""
     usage = CanonicalUsage(cache_read_tokens=1_000_000)
     monkeypatch.setattr(
         usage_pricing,
@@ -279,14 +279,14 @@ def test_deepseek_cache_read_scales_at_peak(monkeypatch):
         lambda: datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc),
     )
     result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
-    assert result.amount_usd == Decimal("0.007")
+    assert result.amount_usd == Decimal("0.003")
     monkeypatch.setattr(
         usage_pricing,
         "_UTC_NOW",
         lambda: datetime(2026, 8, 17, 2, 0, tzinfo=timezone.utc),
     )
     result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
-    assert result.amount_usd == Decimal("0.014")
+    assert result.amount_usd == Decimal("0.006")
 
 
 def test_deepseek_pre_switchover_uses_legacy_flat_rates(monkeypatch):
@@ -324,8 +324,8 @@ def test_deepseek_switchover_instant_boundary(monkeypatch):
         lambda: datetime(2026, 8, 16, 16, 0, 0, tzinfo=timezone.utc),
     )
     result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
-    assert result.amount_usd == Decimal("0.88")
-    assert result.pricing_version == "deepseek-pricing-2026-08-16"
+    assert result.amount_usd == Decimal("0.75")
+    assert result.pricing_version == "deepseek-pricing-2026-09-10"
 
 
 def test_deepseek_billing_time_prices_historical_moment(monkeypatch):
@@ -355,7 +355,7 @@ def test_deepseek_billing_time_prices_historical_moment(monkeypatch):
         provider="deepseek",
         billing_time=datetime(2026, 8, 17, 2, 0, tzinfo=timezone.utc),
     )
-    assert result.amount_usd == Decimal("1.76")
+    assert result.amount_usd == Decimal("1.50")
     assert any("peak" in note for note in result.notes)
     # Post-switchover session in an off-peak hour → 1x.
     result = estimate_usage_cost(
@@ -364,12 +364,12 @@ def test_deepseek_billing_time_prices_historical_moment(monkeypatch):
         provider="deepseek",
         billing_time=datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc),
     )
-    assert result.amount_usd == Decimal("0.88")
+    assert result.amount_usd == Decimal("0.75")
     # Switchover-instant boundaries with an explicit billing_time.
     for stamp, expected in [
         (datetime(2026, 8, 16, 15, 59, 59, tzinfo=timezone.utc), "0.42"),
-        (datetime(2026, 8, 16, 16, 0, 0, tzinfo=timezone.utc), "0.88"),
-        (datetime(2026, 8, 16, 16, 0, 1, tzinfo=timezone.utc), "0.88"),
+        (datetime(2026, 8, 16, 16, 0, 0, tzinfo=timezone.utc), "0.75"),
+        (datetime(2026, 8, 16, 16, 0, 1, tzinfo=timezone.utc), "0.75"),
     ]:
         result = estimate_usage_cost(
             "deepseek-v4-flash", usage, provider="deepseek", billing_time=stamp
@@ -405,7 +405,7 @@ def test_deepseek_billing_time_normalized_to_utc():
             2026, 8, 17, 10, 0, tzinfo=timezone(timedelta(hours=8))
         ),
     )
-    assert result.amount_usd == Decimal("1.76")
+    assert result.amount_usd == Decimal("1.50")
     assert any("peak" in note for note in result.notes)
 
 

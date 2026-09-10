@@ -194,12 +194,12 @@ class TestEstimateCost:
             2026, 8, 17, 2, 0, tzinfo=timezone.utc
         ).timestamp()
         cost, status = _estimate_cost(session)
-        assert cost == pytest.approx(1.76, abs=0.0001)
+        assert cost == pytest.approx(1.50, abs=0.0001)
         # Session without started_at falls back to report time (mocked to a
         # peak hour here, so 2x applies).
         del session["started_at"]
         cost, status = _estimate_cost(session)
-        assert cost == pytest.approx(1.76, abs=0.0001)
+        assert cost == pytest.approx(1.50, abs=0.0001)
 
     def test_zero_tokens(self):
         cost, status = _estimate_cost("gpt-4o", 0, 0, provider="openai")

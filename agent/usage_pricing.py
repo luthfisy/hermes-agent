@@ -147,11 +147,13 @@ _DEEPSEEK_PEAK_DAYS = frozenset({1, 2, 3, 4, 5})
 # UTC).  If DeepSeek ever moves a peak hour to 16:00+ UTC, the weekday
 # must be read in Asia/Shanghai instead.
 
-# Pre-switchover flat card (deepseek-pricing-2026-07). The 2026-08-16 rate
-# card stores OFF-PEAK rates in the snapshot and bills 2x during peak hours;
-# this legacy card keeps estimates accurate during the transition window.
-# Remove it (and the effective-date branch in estimate_usage_cost) after the
-# switchover lands.
+# Pre-switchover flat card (deepseek-pricing-2026-07): DeepSeek billed a flat
+# rate until 2026-08-16T16:00Z.  The snapshot holds the current card's OFF-PEAK
+# rates and bills 2x during peak hours; this legacy card keeps estimates
+# accurate for sessions that ran before the switchover, so it stays as long as
+# those sessions can be re-priced.  Sessions billed between the switchover and
+# the 2026-09-10 card are priced on the current snapshot: the two events are
+# separate, and DeepSeek publishes no effective instant for the newer sheet.
 _DEEPSEEK_LEGACY_FLASH_ENTRY = PricingEntry(
     input_cost_per_million=Decimal("0.14"),
     output_cost_per_million=Decimal("0.28"),
