@@ -4768,8 +4768,16 @@ class TestRunConversation:
 
         assert result.get("partial") is True
         msgs = result.get("messages") or []
+<<<<<<< HEAD:tests/agent/test_run_agent.py
         assert msgs[-1].get("role") == "assistant"
         assert "cut off" in (msgs[-1].get("content") or "").lower()
+=======
+        # Truncated-args partial exits stamp interruption provenance on the tool
+        # tail (#63292): the durable transcript keeps the real ``tool`` row and the
+        # API-copy sanitizer synthesizes the closure at the next user turn.
+        assert msgs[-1].get("role") == "tool", "interrupted tool tail is kept, not closed in-place"
+        assert msgs[-1].get("_interrupted_tool_tail") is True, "provenance marker must be stamped on the tool tail"
+>>>>>>> 6729f6850e (fix(agent): persist interrupted tool tails as provenance, not synthetic closure rows):tests/run_agent/test_run_agent.py
         assert any(isinstance(m, dict) and m.get("role") == "tool" for m in msgs)
 
 
