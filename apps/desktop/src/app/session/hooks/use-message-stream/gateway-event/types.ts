@@ -20,7 +20,8 @@ export interface GatewayEventDeps {
     text: string,
     responsePreviewed?: boolean,
     failure?: { error: string; partial: boolean },
-    occurredAt?: number
+    occurredAt?: number,
+    interrupted?: boolean
   ) => void
   failAssistantMessage: (
     sessionId: string,
