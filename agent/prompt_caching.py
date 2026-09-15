@@ -128,6 +128,7 @@ def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "")
 def _apply_system_cache_markers(
     message: dict, cache_marker: dict, static_system_prefix: str | None, *,
     native_anthropic: bool, mark_suffix: bool = True, fallback_to_whole: bool = True,
+    stable_system_prefix: str | None = None,
 ) -> int:
     """Mark the static system prefix (and optionally the full prompt); returns markers applied.
 
@@ -138,6 +139,21 @@ def _apply_system_cache_markers(
     """
     content = message.get("content")
     if isinstance(static_system_prefix, str) and static_system_prefix and isinstance(content, str) and content.startswith(static_system_prefix):
+        if (
+            isinstance(stable_system_prefix, str)
+            and stable_system_prefix
+            and stable_system_prefix != static_system_prefix
+            and static_system_prefix.startswith(stable_system_prefix)
+        ):
+            context_head = content[len(stable_system_prefix):len(static_system_prefix)]
+            suffix = content[len(static_system_prefix):]
+            if context_head.strip():
+                message["content"] = [
+                    _text_part(stable_system_prefix, cache_marker),
+                    _text_part(context_head, cache_marker),
+                    *([_text_part(suffix, cache_marker if mark_suffix else None)] if suffix.strip() else []),
+                ]
+                return 3 if mark_suffix and suffix.strip() else 2
         suffix = content[len(static_system_prefix):]
         if suffix.strip():
             message["content"] = [_text_part(static_system_prefix, cache_marker),
@@ -261,10 +277,16 @@ def build_prompt_cache_plan(
     if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
         # Tool-cache layout: only the static prefix carries a system-side marker; the
         # volatile suffix's budget is spent on the tools array.
-        _apply_system_cache_markers(messages[0], marker, static_system_prefix,
-                                    native_anthropic=True, mark_suffix=False, fallback_to_whole=False)
+        system_markers = _apply_system_cache_markers(
+            messages[0], marker, static_system_prefix,
+            native_anthropic=True, mark_suffix=False, fallback_to_whole=False,
+            stable_system_prefix=getattr(static_system_prefix, "stable_prefix", None),
+        )
+    else:
+        system_markers = 0
     planned_tools[-1]["cache_control"] = dict(marker)
-    for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-2:]:
+    transaction_budget = max(0, 4 - system_markers - 1)
+    for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-transaction_budget:] if transaction_budget else []:
         _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
 
     return PromptCachePlan(messages=messages, tools=planned_tools)
