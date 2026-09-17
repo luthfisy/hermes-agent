@@ -195,6 +195,13 @@ export interface Translations {
   // ── Sessions page ──
   sessions: {
     title: string;
+    /** Optional until all locales translate; deep-merge falls back to English. */
+    renameSession?: string;
+    exportSession?: string;
+    exportSessionTooltip?: string;
+    sessionTitlePlaceholder?: string;
+    saveTitle?: string;
+    cancelRename?: string;
     history: string;
     overview: string;
     filterChats: string;
@@ -305,6 +312,11 @@ export interface Translations {
   // ── Models page ──
   models: {
     modelsUsed: string;
+    /** Optional until all locales translate; deep-merge falls back to English. */
+    expensiveWarningTitle?: string;
+    resetAuxiliaryModels?: string;
+    newPresetNamePlaceholder?: string;
+    selectMoaModel?: string;
     estimatedCost: string;
     tokens: string;
     sessions: string;
@@ -334,6 +346,9 @@ export interface Translations {
     /** Optional — English fallback until translated. */
     loadWhat?: string;
     scriptRequired?: string;
+    /** Optional until all locales translate; deep-merge falls back to English. */
+    jobIdsPlaceholder?: string;
+    editJob?: string;
     confirmDeleteMessage: string;
     confirmDeleteTitle: string;
     newJob: string;
@@ -522,6 +537,10 @@ export interface Translations {
   // ── Skills page ──
   skills: {
     title: string;
+    /** Optional until all locales translate; deep-merge falls back to English. */
+    editSkillMd?: string;
+    learnUrlPlaceholder?: string;
+    learnTextPlaceholder?: string;
     searchPlaceholder: string;
     /** Optional — English fallback until translated. */
     loadWhat?: string;
@@ -594,6 +613,8 @@ export interface Translations {
 
   // ── Env / Keys page ──
   env: {
+    /** Optional until all locales translate; deep-merge falls back to English. */
+    jumpToSection?: string;
     changesNote: string;
     confirmClearMessage: string;
     confirmClearTitle: string;
@@ -782,6 +803,19 @@ export interface Translations {
       clipboard_unsupported: string;
       tweet_text: string;
     };
+  };
+
+  // ── Chat page chrome ──
+  chat?: {
+    /** Optional until all locales translate; deep-merge falls back to English. */
+    reconnect?: string;
+    newSession?: string;
+    copyLastTooltip?: string;
+    copyLast?: string;
+    showSidePanel?: string;
+    showSidePanelTitle?: string;
+    collapseSidePanel?: string;
+    collapseSidePanelTitle?: string;
   };
 
   // ── Kanban ──

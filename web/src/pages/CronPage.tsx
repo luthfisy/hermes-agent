@@ -207,6 +207,7 @@ function CronAdvancedFields({
   modelOptions: ModelOptionsResult | null;
   availableToolsets: ToolsetInfo[];
 }) {
+  const { t } = useI18n();
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
     next: CronJobEditorState[K],
@@ -285,7 +286,7 @@ function CronAdvancedFields({
               id={`${idPrefix}-script`}
               value={form.script}
               onChange={(e) => update("script", e.target.value)}
-              placeholder="relative/path/in/scripts"
+              placeholder={t.cron?.jobIdsPlaceholder ?? "relative/path/in/scripts"}
             />
           </div>
         </div>
@@ -316,7 +317,7 @@ function CronAdvancedFields({
             <textarea
               id={`${idPrefix}-context-from`}
               className="flex min-h-[64px] w-full border border-border bg-background/40 px-3 py-2 text-xs font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-              placeholder="one job id per line"
+              placeholder={t.cron.jobIdsPlaceholder}
               value={form.context_from}
               onChange={(e) => update("context_from", e.target.value)}
             />
@@ -951,7 +952,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1026,7 +1027,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setEditJob(null)}
               className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1255,8 +1256,8 @@ export default function CronPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Edit job"
-                    aria-label="Edit job"
+        title={t.cron.editJob}
+        aria-label={t.cron.editJob}
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />
