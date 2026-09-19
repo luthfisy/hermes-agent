@@ -19,6 +19,7 @@ from agent.message_sanitization import (
     needs_reasoning_echo,
     reapply_reasoning_echo,
     reasoning_echo_family,
+    sanitize_outbound_kwargs,
     uniquify_tool_call_ids,
 )
 
@@ -473,3 +474,46 @@ class TestPerProviderReasoningEcho:
         api_msg = {"role": "assistant", "content": "hi"}
         apply_reasoning_content_policy(source, api_msg, needs_thinking_pad=False)
         assert "reasoning_content" not in api_msg
+
+
+# ---------------------------------------------------------------------------
+# outbound tool-call id length cap
+# ---------------------------------------------------------------------------
+
+class TestOutboundToolCallIdCap:
+    """Responses-backed OpenAI models reject a REPLAYED tool-call id longer than 64 chars with a
+    non-retryable 400 (`Invalid 'input[N].call_id': string too long`), which bricks the chat for
+    every later turn. Contracts: (1) both sides of a call/result pair must clamp to the SAME
+    surrogate — clamping one side orphans the pair; (2) ids already within the cap must pass through
+    byte-identically, because these ids feed prompt-cache prefixes."""
+
+    @staticmethod
+    def _pair(call_id: str) -> dict:
+        return {"messages": [
+            {"role": "assistant", "tool_calls": [
+                {"id": call_id, "call_id": call_id, "type": "function",
+                 "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": call_id, "content": "ok"},
+        ]}
+
+    def test_oversized_pair_clamps_to_one_matching_surrogate(self):
+        oversized = "call_546764__thought__" + "A" * 2000
+        api_kwargs = self._pair(oversized)
+        sanitize_outbound_kwargs(SimpleNamespace(_force_ascii_payload=False), api_kwargs)
+
+        assistant, tool_msg = api_kwargs["messages"]
+        tc = assistant["tool_calls"][0]
+        assert len(tc["id"]) <= 64
+        assert len(tool_msg["tool_call_id"]) <= 64
+        # The whole contract: a clamped call and its result must still agree.
+        assert tc["id"] == tool_msg["tool_call_id"] == tc["call_id"]
+        assert tc["id"] != oversized
+
+    def test_ids_within_the_cap_are_untouched(self):
+        short = "call_40ccaef54d02"
+        api_kwargs = self._pair(short)
+        sanitize_outbound_kwargs(SimpleNamespace(_force_ascii_payload=False), api_kwargs)
+
+        assistant, tool_msg = api_kwargs["messages"]
+        assert assistant["tool_calls"][0]["id"] == short
+        assert tool_msg["tool_call_id"] == short
