@@ -47,6 +47,7 @@ import {
   SidebarRowShell
 } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SessionModelLogo } from './session-model-logo'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { useProfilePrewarm } from './use-profile-prewarm'
@@ -461,19 +462,32 @@ function SidebarSessionRowImpl({
         >
           {(() => {
             const leadNode = reorderable ? (
-              <SidebarRowGrab ariaLabel={handleLabel} dragging={dragging} dragHandleProps={dragHandleProps}>
+              <SidebarRowGrab
+                ariaLabel={handleLabel}
+                dragging={dragging}
+                dragHandleProps={dragHandleProps}
+                leadClassName={branchStem ? 'w-auto' : undefined}
+              >
                 {lead ?? (
                   <SessionStatusDot
                     branchStem={branchStem}
                     className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                    glyph={<SessionModelLogo session={session} />}
                     session={session}
                     storedSessionId={session.id}
                   />
                 )}
               </SidebarRowGrab>
             ) : (
-              <SidebarRowLead className="overflow-hidden">
-                {lead ?? <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />}
+              <SidebarRowLead className={cn('overflow-hidden', branchStem && 'w-auto')}>
+                {lead ?? (
+                  <SessionStatusDot
+                    branchStem={branchStem}
+                    glyph={<SessionModelLogo session={session} />}
+                    session={session}
+                    storedSessionId={session.id}
+                  />
+                )}
               </SidebarRowLead>
             )
 
