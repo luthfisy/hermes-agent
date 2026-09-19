@@ -306,7 +306,8 @@ class MemoryStore:
         def _apply(entries, limit):
             idx, ambiguous = _find_unique_match(entries, old_text)
             if ambiguous:
-                return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
+                return _error(f"Multiple entries matched '{old_text}'. Be more specific — or pass the "
+                              f"target entry's full text, which is never ambiguous.",
                               matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
             if idx is None:
                 return self._consolidation_failure(_error(
@@ -345,7 +346,8 @@ class MemoryStore:
             return f"{pos}: content is required (use action='remove' to delete).", None
         idx, ambiguous = _find_unique_match(working, old_text)
         if ambiguous:
-            return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None
+            return (f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific, "
+                    f"or pass the target entry's full text."), None
         if idx is None:
             return f"{pos}: no entry matched '{old_text}'.", None
         replaced_text = working[idx] if act == "replace" else None
