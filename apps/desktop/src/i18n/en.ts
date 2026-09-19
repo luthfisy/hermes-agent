@@ -4083,6 +4083,7 @@ export const en: Translations = {
       turnStatsCached: n => `${n} cached`,
       turnStatsHit: n => `${n} hit`,
       turnStatsCalls: n => `${n} calls`,
+      turnStatsCost: n => `${n} est.`,
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',
