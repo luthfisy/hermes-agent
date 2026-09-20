@@ -118,6 +118,7 @@ All SSE streams (Chat Completions, Responses, `/api/sessions/{id}/chat/stream`, 
 - **Chat Completions**: reasoning deltas arrive as `choices[0].delta.reasoning_content` chunks (the DeepSeek-style field Open WebUI, opencode and the Vercel AI SDK render as a thinking block); answer text stays in `delta.content`.
 - **Responses**: each thinking burst is a spec-native `reasoning` output item — `response.output_item.added` (`item.type: "reasoning"`), `response.reasoning_summary_part.added`, `response.reasoning_summary_text.delta` … `response.reasoning_summary_text.done`, `response.reasoning_summary_part.done`, `response.output_item.done` — closed before the next message or `function_call` item opens, and echoed in the `response.completed` output as `{"id": "rs_…", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "…"}]}`. `sequence_number` stays monotonic across reasoning, text and tool events.
 - **Non-streaming**: `/v1/chat/completions` returns the turn's reasoning on `choices[0].message.reasoning_content`; `/v1/responses` returns the same `reasoning` output item(s) ahead of the message (and of that step's `function_call` items), also on `GET /v1/responses/{id}` replay.
+- **`/v1/runs/{run_id}/events` and `/api/sessions/{id}/chat/stream`**: every reasoning token arrives as its own `reasoning.delta` event (`message_id`, `delta`), never mixed into the answer deltas (`message.delta` / `assistant.delta`). The completion-time `reasoning.available` progress preview is not forwarded on either stream: it is derived from finished assistant content, so treating it as live reasoning would misclassify or duplicate the final answer.
 - Echoing a prior response's `output` list back as the next `input` (what Responses SDK clients do) is fine: `reasoning` items are ignored on input rather than parsed as empty user turns.
 - Support is advertised as `features.reasoning_streaming: true` on `GET /v1/capabilities`.
 
@@ -498,6 +499,10 @@ preambles, or text a model writes alongside its tool calls — arrives as `messa
 means the text also went out as `message.delta`, so clients that render deltas can skip it.
 The final answer still arrives only in `run.completed`; private reasoning never becomes
 `message.interim`. Gate: `display.interim_assistant_messages` (default `true`).
+
+Model reasoning arrives on its own `reasoning.delta` event (`delta`), never folded into
+`message.delta`, so a client can render a live thinking block and drop it when assembling the
+reply. The completion-time `reasoning.available` preview is not emitted on this stream.
 
 Tool lifecycle events carry `tool.started` (`tool`, `preview` of the arguments) and
 `tool.completed` (`tool`, `duration` in seconds, `error`, and a `preview` of the result). The
