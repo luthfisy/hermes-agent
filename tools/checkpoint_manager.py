@@ -164,9 +164,18 @@ def _ledger_path(store: Path, dir_hash: str) -> Path:
 
 
 def _fsync_file(path: Path) -> None:
-    """Best-effort fsync of a single file's data to stable storage."""
+    """Best-effort fsync of a single file's data to stable storage.
+
+    Flags: O_RDWR on Windows, O_RDONLY elsewhere. os.fsync maps to
+    FlushFileBuffers there, which needs a handle with write access — a
+    read-only handle raises EBADF (errno 9) and the best-effort except
+    below would swallow it into a *silent* no-op. POSIX keeps O_RDONLY:
+    that is the only form that opens a directory (see _fsync_parent_dir)
+    and it fsyncs regular files there just the same.
+    """
+    flags = os.O_RDWR if os.name == "nt" else os.O_RDONLY
     try:
-        fd = os.open(str(path), os.O_RDONLY)
+        fd = os.open(str(path), flags)
     except OSError:
         return
     try:
@@ -1501,6 +1510,12 @@ def build_interruption_note(working_dir=None, exclude_session_id="", base=None):
     newest markers (reason + last action), the last checkpoint pointer for
     ``working_dir`` when one exists, and the tail of the mutation journal
     so the model can triage instead of trusting stale tree state.
+
+    Known ceiling: markers can't tell "died mid-turn" from "still running"
+    — the in-flight marker is written at turn start and only cleared by the
+    session itself, so a *concurrent* live session's marker is surfaced
+    here too. Ponytail: PID in the payload + a liveness probe when a
+    concurrent-session false positive actually bites.
     """
     try:
         now = time.time()
