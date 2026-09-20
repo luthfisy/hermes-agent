@@ -3811,6 +3811,12 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
+/** ``tools/pen_canvas_tool.py`` field set: ``args`` is the editor's own MCP tool payload. */
+export interface PenToolRequestParams {
+  session_id: string
+  action: string
+  args?: Record<string, unknown>
+}
 /** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
 export interface ConnectionUpdatePayload {
   op_id: string
@@ -4857,6 +4863,8 @@ export interface ServerRequestMap {
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
   /** The clarify tool: ask the user one question or a batch. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
+  /** Run one pen.dev canvas operation in the desktop renderer (JSON text answer). */
+  'pen.tool': { params: PenToolRequestParams; result: ValueResult }
   /** Click / type / scroll / annotate inside the in-app browser preview. */
   'preview.act': { params: PreviewActRequestParams; result: ValueResult }
   /** Read the in-app browser preview's text (JSON text answer). */
@@ -4882,6 +4890,7 @@ export type ServerRequestMethod = keyof ServerRequestMap
 export const SERVER_REQUEST_METHODS = [
   'approval',
   'clarify',
+  'pen.tool',
   'preview.act',
   'preview.read',
   'secret',

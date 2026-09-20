@@ -216,6 +216,10 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     ),
     "manage_connections": _manage_connections,
     "setup_mcp": _setup_mcp_shim,
+    "pen_canvas": _callback_tool(
+        "tools.pen_canvas_tool", "pen_canvas_tool", "pen_canvas_callback",
+        ("action", "action", ""), ("args", "args"),
+    ),
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
 }
 

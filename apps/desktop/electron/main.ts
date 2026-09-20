@@ -297,6 +297,7 @@ import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
+import { shutdownPenHost, syncPenWebTheme, wirePenCanvas } from './pen'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -17176,6 +17177,8 @@ ipcMain.on('hermes:native-theme', (_event, mode) => {
     nativeTheme.themeSource = mode
     writePersistedThemeSource(mode)
   }
+
+  syncPenWebTheme()
 })
 
 // See-through window translucency. Persist + re-apply to every open window at
@@ -18184,6 +18187,7 @@ app.whenReady().then(() => {
   installMediaPermissions()
   installDownloadHandling()
   registerMediaProtocol()
+  wirePenCanvas({ preloadPath: path.join(APP_ROOT, 'dist', 'pen-web-preload.cjs') })
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
@@ -18348,6 +18352,9 @@ app.on('before-quit', event => {
   // callbacks cannot recreate a backend for a registration whose app is
   // already quitting (#91668).
   sshBootstrapCoordinator.shutdown()
+
+  // Drop the embed-bridge port so a relaunch doesn't meet a stale handshake.
+  shutdownPenHost()
 
   const backendNeedsWait = backendQuitNeedsWait({
     connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),

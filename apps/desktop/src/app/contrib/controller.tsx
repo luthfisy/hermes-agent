@@ -1,3 +1,6 @@
+// Side-effect import: registers the pen provider with the canvas-tile surface.
+import '../chat/pen-tile'
+
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
@@ -37,6 +40,7 @@ import {
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
+import { PenLibraryDialog } from '@/components/pen-library-dialog'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
@@ -44,7 +48,18 @@ import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Users, Zap } from '@/lib/icons'
+import {
+  Download,
+  FileText,
+  LayoutDashboard,
+  PanelBottom,
+  PanelTop,
+  Pencil,
+  Terminal,
+  Upload,
+  Users,
+  Zap
+} from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
@@ -61,6 +76,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
+import { $penLibraryOpen, openPenCanvas, openPenLibrary, watchPenSession } from '@/store/pen'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import {
@@ -79,6 +95,7 @@ import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
+import { watchCanvasTiles } from '../chat/canvas-tile'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchPreviewTiles } from '../chat/preview-tile'
 import { watchRouteTiles } from '../chat/route-tile'
@@ -409,6 +426,61 @@ registry.registerMany([
       keywords: ['profile', 'import', 'share', 'bundle', 'archive', 'restore'],
       run: () => void runImportProfileFlow()
     } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.newCanvas',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.newCanvas',
+      label: 'New canvas',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'design', 'draw', 'pencil', 'mockup', 'figma'],
+      run: () => void openPenCanvas()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.openFile',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.openFile',
+      label: 'Open .pen file…',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'design', 'open', 'file', 'pencil'],
+      run: () =>
+        void window.hermesDesktop
+          ?.selectPaths({
+            filters: [{ name: 'Pen Design Files', extensions: ['pen'] }]
+          })
+          .then(paths => {
+            const file = paths?.[0]
+
+            if (file) {
+              void openPenCanvas({ path: file })
+            }
+          })
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.library',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.library',
+      label: 'Browse canvases…',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'pens', 'design', 'library', 'browse', 'recent', 'open', 'pencil'],
+      run: () => void openPenLibrary()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'pen.closeCanvas',
+    area: PALETTE_AREA,
+    data: {
+      id: 'pen.closeCanvas',
+      label: 'Close canvas',
+      icon: Pencil,
+      keywords: ['canvas', 'pen', 'close', 'hide', 'dismiss', 'pencil'],
+      run: () => void window.hermesDesktop?.pen?.close()
+    } satisfies PaletteContribution
   }
 ])
 
@@ -436,6 +508,9 @@ if (!isBrowserWindow() && !isHudWindow()) {
   watchRouteTiles()
   watchPreviewTiles()
 }
+
+watchCanvasTiles()
+watchPenSession()
 
 // Mirror sidebar pins into the backend keep-flag so the auto-archive sweep
 // never hides a pinned chat (and pre-existing pins migrate transparently).
@@ -774,6 +849,7 @@ registerPaneCloser('files', () =>
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
   const statusbarVisible = useStore($statusbarVisible)
+  const penLibraryOpen = useStore($penLibraryOpen)
 
   // HUD mode is the SAME app with its frame removed: the wiring (gateway,
   // sessions, streams, submit) mounts identically, and only the shell around
@@ -819,6 +895,8 @@ export function ContribController() {
 
           {/* "Close running tab?" — the busy/input-blocked tile close gate. */}
           <SessionTileCloseConfirm />
+
+          <PenLibraryDialog onOpenChange={(open: boolean) => $penLibraryOpen.set(open)} open={penLibraryOpen} />
 
           {/* The REAL statusbar (model pill, command center, agents, …) with
               statusBar.left/right contributions merged in. Unmounted — not
