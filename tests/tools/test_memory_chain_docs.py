@@ -96,3 +96,54 @@ def test_anchor_block_names_chain_docs_without_load(store):
 
     assert DOC in block and "Chain docs" in block
     assert "secret detail" not in block  # contents stay out of the prompt
+
+
+def test_orphaned_chain_doc_is_reported_on_anchor_read(store):
+    """Editing away the anchor entry that named a doc leaves the file behind: the doc keeps
+    its entries and stays readable, but the chain line no longer mentions it — so an anchor
+    read is the only place the model can learn it still exists (#116564)."""
+    _call(store, action="add", target="memory", content=ANCHOR_REF)
+    _call(store, action="add", target="memory", doc=DOC, content="First note")
+    assert _call(store, action="replace", target="memory", old_text="@doc:",
+                 new_text="Chain index: see docs/")["success"] is True
+
+    anchor = _call(store, action="read", target="memory")
+
+    assert anchor["chain_docs"] == []
+    assert anchor["orphan_docs"] == [{"name": DOC, "entries": 1, "chars": len("First note")}]
+    # Still readable: that is exactly why being listed matters.
+    assert _call(store, action="read", target="memory", doc=DOC)["entries"] == ["First note"]
+
+
+def test_orphaned_chain_doc_write_names_the_file_and_the_ways_out(store, tmp_path):
+    _call(store, action="add", target="memory", content=ANCHOR_REF)
+    _call(store, action="add", target="memory", doc=DOC, content="First note")
+    _call(store, action="replace", target="memory", old_text="@doc:", new_text="Chain index: see docs/")
+
+    result = _call(store, action="add", target="memory", doc=DOC, content="more")
+
+    assert result["success"] is False
+    assert str(tmp_path / "docs" / f"{DOC}.md") in result["error"]
+    assert "Re-link" in result["error"]
+
+
+def test_anchor_at_cap_names_the_way_to_link_a_doc(store):
+    """The reference entry itself costs anchor budget, so at the cap the order has to be
+    named: free space first, then link, then write (#116564)."""
+    assert _call(store, action="add", target="memory", content="z" * 200)["success"] is True
+
+    result = _call(store, action="add", target="memory", doc="fresh", content="x")
+
+    assert result["success"] is False
+    assert "free space FIRST" in result["error"]
+    assert "@doc:fresh" in result["error"]
+
+
+def test_linked_doc_is_not_reported_as_orphan(store):
+    _call(store, action="add", target="memory", content=ANCHOR_REF)
+    _call(store, action="add", target="memory", doc=DOC, content="First note")
+
+    anchor = _call(store, action="read", target="memory")
+
+    assert "orphan_docs" not in anchor
+    assert anchor["chain_docs"][0]["name"] == DOC

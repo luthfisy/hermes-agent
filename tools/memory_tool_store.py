@@ -139,6 +139,21 @@ class MemoryStore:
         entries = self._read_file(self._path_for(doc_target(name)))
         return {"name": name, "entries": len(entries), "chars": len(ENTRY_DELIMITER.join(entries))}
 
+    def orphan_doc_names(self) -> List[str]:
+        """Chain docs on disk that the anchor no longer references.
+
+        Editing the anchor entry that named a doc leaves the file behind: nothing deletes
+        ``memories/docs/*.md``, so the doc keeps its entries and stays readable, while the
+        chain line no longer mentions it and every write to it is refused by the gate. That
+        makes an anchor read the only place the model can learn they exist.
+        """
+        docs_dir = self._path_for("memory").parent / DOCS_SUBDIR
+        if not docs_dir.is_dir():
+            return []
+        referenced = set(chain_doc_names(self._read_file(self._path_for("memory"))))
+        return sorted(name for p in docs_dir.glob("*.md")
+                      if (name := doc_name(p.stem)) and name not in referenced)
+
     def reset_consolidation_failures(self) -> None:
         """Call at turn start."""
         self._consolidation_failures = 0
@@ -309,13 +324,30 @@ class MemoryStore:
     def _anchor_gate(self, target: str) -> Optional[Dict[str, Any]]:
         """Refuse a write to a chain doc the anchor (MEMORY.md) does not reference: that
         reference is what makes the doc memory rather than a stray file, and it is the only
-        way the model learns the doc exists. No-op for the anchor and the profile."""
+        way the model learns the doc exists. No-op for the anchor and the profile.
+
+        The refusal is also where two dead ends get named rather than left to be discovered:
+        an already-written doc whose anchor entry was edited away (re-link it, or delete the
+        file — a read still returns its entries), and an anchor with no headroom for the
+        reference entry it is being asked to add (#116564)."""
         name = self._doc(target)
         if name is None or name in chain_doc_names(self._read_file(self._path_for("memory"))):
             return None
+        path = self._path_for(target)
+        if path.exists():
+            return _error(
+                f"Chain doc '{name}' exists at {path} but MEMORY.md no longer references it, so writes "
+                f"are refused (reads still work). Re-link it with an entry naming '@doc:{name}', or "
+                f"delete the file if the doc is no longer wanted.", target=target)
+        hint = ""
+        limit = self.memory_char_limit
+        if limit is not None and self._char_count("memory") >= limit:
+            hint = (f" MEMORY.md is at its limit ({self._usage('memory')}), and the reference entry itself "
+                    f"costs anchor budget: free space FIRST — fold an existing anchor entry into a chain "
+                    f"doc or shorten entries — then add the '@doc:{name}' reference, then write this doc.")
         return _error(
             f"Chain doc '{name}' is not referenced by MEMORY.md. Add an entry to memory naming it "
-            f"(e.g. \"Dated memory chain: @doc:{name}\"), then retry.", target=target)
+            f"(e.g. \"Dated memory chain: @doc:{name}\"), then retry." + hint, target=target)
 
     def read(self, target: str) -> Dict[str, Any]:
         """Entries of *target* as stored on disk (read-only: no gate, no drift guard, no write).
@@ -331,6 +363,8 @@ class MemoryStore:
             "usage": self._usage_pct(target, self._char_count(target))}
         if target == "memory":
             response["chain_docs"] = [self.doc_stats(n) for n in chain_doc_names(entries)]
+            if orphans := self.orphan_doc_names():
+                response["orphan_docs"] = [self.doc_stats(n) for n in orphans]
         return response
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
