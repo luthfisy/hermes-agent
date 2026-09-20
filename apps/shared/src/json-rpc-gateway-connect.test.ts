@@ -67,3 +67,62 @@ describe('JsonRpcGatewayClient.connect failure classes', () => {
     expect(error.message).not.toBe(connectErrorMessage)
   })
 })
+
+describe('JsonRpcGatewayClient.connect handshake option', () => {
+  it('a raw open keeps the connection pending until gateway.ready', async () => {
+    const { client, pending, socket } = dial()
+    let resolved = false
+
+    void pending.then(
+      () => {
+        resolved = true
+      },
+      () => undefined
+    )
+
+    socket.dispatchEvent(new Event('open'))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(resolved).toBe(false)
+    expect(client.connectionState).toBe('connecting')
+
+    const ready = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } })
+    socket.dispatchEvent(new MessageEvent('message', { data: ready }))
+    await pending
+
+    expect(resolved).toBe(true)
+    expect(client.connectionState).toBe('open')
+  })
+
+  it('handshake open resolves on open and delivers a first non-ready frame to the event hub', async () => {
+    let socket!: StuckSocket
+
+    const client = new JsonRpcGatewayClient({
+      socketFactory: () => (socket = new StuckSocket()) as unknown as WebSocket,
+      heartbeatIntervalMs: 0,
+      heartbeatDeadlineMs: 0,
+      connectTimeoutMs: 1000,
+      connectErrorMessage,
+      handshake: 'open'
+    })
+
+    const events: string[] = []
+
+    client.onEvent(event => events.push(event.type))
+
+    const pending = client.connect('ws://gateway.test/api/ws')
+    pending.catch(() => {})
+
+    socket.dispatchEvent(new Event('open'))
+    await pending
+
+    expect(client.connectionState).toBe('open')
+
+    const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'tool.start' } })
+    socket.dispatchEvent(new MessageEvent('message', { data: frame }))
+
+    expect(events).toEqual(['tool.start'])
+    expect(client.connectionState).toBe('open')
+  })
+})

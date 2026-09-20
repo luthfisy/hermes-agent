@@ -13,12 +13,42 @@ import {
 export type { GatewayEvent, GatewayEventName } from './gateway-events.js'
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
 
+/** Connection-handshake failure with optional WebSocket close metadata. */
+export class GatewayConnectError extends Error {
+  readonly wsCloseCode?: number
+  readonly needsOauthLogin?: boolean
+
+  constructor(message: string, options?: { wsCloseCode?: number; needsOauthLogin?: boolean }) {
+    super(message)
+    this.name = 'GatewayConnectError'
+    this.wsCloseCode = options?.wsCloseCode
+    this.needsOauthLogin = options?.needsOauthLogin
+  }
+}
+
 export type WebSocketLike = WebSocket
 
+type ConnectAttempt = {
+  socket: WebSocketLike
+  url: string
+  promise: Promise<void>
+  resolve: () => void
+  reject: (error: Error) => void
+  timer?: ReturnType<typeof setTimeout>
+  settled: boolean
+}
 export interface GatewayClientOptions {
+  authRejectedErrorMessage?: string
   closedErrorMessage?: string
   connectErrorMessage?: string
   connectTimeoutMs?: number
+  /**
+   * When `connect()` settles. `'gateway.ready'` (default) waits for that first
+   * frame; any other first frame is a protocol failure. `'open'` settles on
+   * the WebSocket `open` event — for sockets such as `/api/events` that never
+   * send `gateway.ready`.
+   */
+  handshake?: 'gateway.ready' | 'open'
   createRequestId?: (nextId: number) => GatewayRequestId
   heartbeatDeadlineMs?: number
   heartbeatIntervalMs?: number
@@ -132,6 +162,7 @@ export class JsonRpcGatewayClient {
    * silently believe nothing was missed.
    */
   private replayEpoch: string | null = null
+  private attempt: ConnectAttempt | null = null
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<
     Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
@@ -139,10 +170,14 @@ export class JsonRpcGatewayClient {
     Pick<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
 
   constructor(options: GatewayClientOptions = {}) {
+    const connectErrorMessage = options.connectErrorMessage ?? 'WebSocket connection failed'
+
     this.options = {
+      authRejectedErrorMessage: options.authRejectedErrorMessage ?? connectErrorMessage,
       closedErrorMessage: options.closedErrorMessage ?? 'WebSocket closed',
-      connectErrorMessage: options.connectErrorMessage ?? 'WebSocket connection failed',
+      connectErrorMessage,
       connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+      handshake: options.handshake ?? 'gateway.ready',
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -174,7 +209,7 @@ export class JsonRpcGatewayClient {
     return this.state
   }
 
-  async connect(wsUrl: string): Promise<void> {
+  connect(wsUrl: string): Promise<void> {
     // Refuse garbage; WebSocket coerces non-strings into
     // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).
     const invalidUrl = () => {
@@ -184,29 +219,145 @@ export class JsonRpcGatewayClient {
     }
 
     if (!isGatewayWebSocketUrl(wsUrl)) {
-      throw invalidUrl()
+      return Promise.reject(invalidUrl())
     }
 
-    if ((this.socket && this.socket.readyState === WebSocket.OPEN) || this.state === 'connecting') {
-      return
+    if (this.state === 'open' && this.socket?.readyState === WebSocket.OPEN) {
+      return Promise.resolve()
+    }
+
+    if (this.attempt && !this.attempt.settled) {
+      if (this.attempt.url === wsUrl) {
+        return this.attempt.promise
+      }
+
+      return Promise.reject(new Error('gateway connect() already in progress'))
     }
 
     this.setState('connecting')
 
-    const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    let socket: WebSocketLike
+
+    try {
+      socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    } catch {
+      this.setState('error')
+
+      return Promise.reject(this.connectFailure('WebSocket error before open'))
+    }
+
     const transport = socketTransport(socket)
     this.socket = socket
     this.channel.stopHeartbeat()
+
+    let resolveAttempt!: () => void
+    let rejectAttempt!: (error: Error) => void
+
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveAttempt = resolve
+      rejectAttempt = reject
+    })
+
+    const attempt: ConnectAttempt = {
+      socket,
+      url: wsUrl,
+      promise,
+      resolve: resolveAttempt,
+      reject: rejectAttempt,
+      settled: false
+    }
+
+    this.attempt = attempt
+
+    const onOpen = () => {
+      if (this.socket !== socket || this.attempt !== attempt || attempt.settled) {
+        return
+      }
+
+      // A raw WebSocket open is only transport readiness. The connection stays
+      // in 'connecting' until the gateway identifies itself with gateway.ready.
+      if (this.options.handshake !== 'open') {
+        return
+      }
+
+      if (!this.settleConnectAttempt(attempt)) {
+        return
+      }
+
+      this.channel.attach(transport)
+      this.setState('open')
+      attempt.resolve()
+
+      // Lossless resume: drain events emitted while we were disconnected.
+      // Fire-and-forget so connect() latency is unaffected; only runs when
+      // we actually observed seq'd events before the drop.
+      void this.fetchReplay()
+    }
+
+    const onError = () => {
+      if (this.socket !== socket || this.attempt !== attempt || attempt.settled) {
+        return
+      }
+
+      if (!this.settleConnectAttempt(attempt)) {
+        return
+      }
+
+      this.setState('error')
+      attempt.reject(this.connectFailure('WebSocket error before open'))
+    }
 
     socket.addEventListener('message', message => {
       if (this.socket !== socket) {
         return
       }
 
-      const text = wireFrameText(message.data)
+      const parsed = this.parseMessage(message.data)
 
-      if (text !== null) {
-        this.channel.handleFrame(text)
+      if (this.attempt === attempt && !attempt.settled && this.options.handshake === 'gateway.ready') {
+        const frame = parsed?.frame
+
+        if (parsed && frame?.method === 'event' && frame.params?.type === 'gateway.ready') {
+          if (!this.settleConnectAttempt(attempt)) {
+            return
+          }
+
+          this.channel.attach(transport)
+          this.setState('open')
+          this.channel.handleFrame(parsed.text)
+          attempt.resolve()
+
+          // Lossless resume: drain events emitted while we were disconnected.
+          // Fire-and-forget so connect() latency is unaffected; only runs when
+          // we actually observed seq'd events before the drop.
+          void this.fetchReplay()
+
+          return
+        }
+
+        if (!this.settleConnectAttempt(attempt)) {
+          return
+        }
+
+        this.setState('error')
+
+        try {
+          socket.close()
+        } catch {
+          // ignore
+        } finally {
+          if (this.socket === socket) {
+            this.socket = null
+          }
+        }
+
+        attempt.reject(new GatewayConnectError(this.options.connectErrorMessage))
+
+        return
+      }
+
+      if (parsed) {
+        this.channel.handleFrame(parsed.text)
       }
     })
 
@@ -215,122 +366,106 @@ export class JsonRpcGatewayClient {
         return
       }
 
-      if (this.options.onSocketClose(event)) {
+      if (this.attempt === attempt && !attempt.settled) {
+        if (!this.settleConnectAttempt(attempt)) {
+          return
+        }
+
+        this.socket = null
+        this.setState('closed')
+
+        const needsOauthLogin = event.code === 4401
+        attempt.reject(
+          this.connectFailure(
+            `WebSocket closed during handshake: code ${event.code}${event.reason ? ` ${event.reason}` : ''}`,
+            {
+              wsCloseCode: event.code,
+              needsOauthLogin: needsOauthLogin || undefined
+            },
+            needsOauthLogin ? this.options.authRejectedErrorMessage : this.options.connectErrorMessage
+          )
+        )
+
         return
       }
 
-      this.dropSocket(new Error(this.options.closedErrorMessage))
+      // onSocketClose is an established-connection interception hook. Handshake
+      // closes are classified above and never flow through it.
+      if (this.state === 'open') {
+        if (this.options.onSocketClose(event)) {
+          return
+        }
+
+        this.dropSocket(new Error(this.options.closedErrorMessage))
+
+        return
+      }
+
+      // A failed handshake may close after its error/protocol-failure path has
+      // already settled. Release that socket without overwriting 'error'.
+      this.socket = null
+      this.channel.stopHeartbeat()
     })
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false
-      let timer: ReturnType<typeof setTimeout> | undefined
+    socket.addEventListener('open', onOpen, { once: true })
+    socket.addEventListener('error', onError, { once: true })
 
-      const cleanup = () => {
-        if (timer !== undefined) {
-          clearTimeout(timer)
-        }
-
-        socket.removeEventListener('open', onOpen)
-        socket.removeEventListener('error', onError)
-        socket.removeEventListener('close', onClose)
-      }
-
-      const onOpen = () => {
-        if (settled || this.socket !== socket) {
+    if (this.options.connectTimeoutMs > 0) {
+      attempt.timer = setTimeout(() => {
+        if (this.socket !== socket || this.attempt !== attempt || attempt.settled) {
           return
         }
 
-        settled = true
-        cleanup()
-        this.channel.attach(transport)
-        this.setState('open')
-        resolve()
-        // Lossless resume: drain events emitted while we were disconnected.
-        // Fire-and-forget so connect() latency is unaffected; only runs when
-        // we actually observed seq'd events before the drop.
-        void this.fetchReplay()
-      }
-
-      // Every rejection below names its failure class. The boot overlay renders this message verbatim, and
-      // a bare connectErrorMessage collapses "server refused the token", "TLS/DNS/refused before open" and
-      // "nothing answered" into one sentence nobody can act on (#41566).
-      const onError = () => {
-        if (settled || this.socket !== socket) {
+        if (!this.settleConnectAttempt(attempt)) {
           return
         }
 
-        settled = true
-        cleanup()
-        this.setState('error')
-        // A browser/renderer 'error' event carries no detail; the class is the message.
-        reject(this.connectFailure('WebSocket error before open'))
-      }
-
-      // A server that closes during the handshake (auth gate, 4401/4403)
-      // may never fire `error`; without this the caller waits out the
-      // connect timeout for a verdict the socket already delivered. The
-      // permanent close listener above normally already dropped the socket
-      // and moved the generation to 'closed'; the branch below only runs
-      // when `onSocketClose` intercepted that transition and left the
-      // half-open socket bound.
-      const onClose = (event: CloseEvent) => {
-        if (settled) {
-          return
-        }
-
-        settled = true
-        cleanup()
-
-        if (this.socket === socket) {
-          this.socket = null
-          this.setState('error')
-        }
-
-        reject(
-          this.connectFailure(
-            `WebSocket closed during handshake: code ${event.code}${event.reason ? ` ${event.reason}` : ''}`
-          )
-        )
-      }
-
-      socket.addEventListener('open', onOpen, { once: true })
-      socket.addEventListener('error', onError, { once: true })
-      socket.addEventListener('close', onClose, { once: true })
-
-      if (this.options.connectTimeoutMs > 0) {
-        timer = setTimeout(() => {
-          if (settled) {
-            return
-          }
-
-          settled = true
-          cleanup()
-
-          // Drop the half-open socket so the next connect() starts clean
-          // instead of short-circuiting on a zombie 'connecting' state.
+        // Drop the half-open socket so the next connect() starts clean
+        // instead of short-circuiting on a zombie 'connecting' state.
+        try {
+          socket.close()
+        } catch {
+          // ignore
+        } finally {
           if (this.socket === socket) {
-            try {
-              socket.close()
-            } catch {
-              // ignore
-            }
-
             this.socket = null
             this.setState('error')
           }
+        }
 
-          reject(this.connectFailure(`no WebSocket open within ${this.options.connectTimeoutMs} ms`))
-        }, this.options.connectTimeoutMs)
-      }
-    })
+        this.setState('error')
+        attempt.reject(this.connectFailure(`no WebSocket open within ${this.options.connectTimeoutMs} ms`))
+      }, this.options.connectTimeoutMs)
+    }
+
+    return promise
   }
 
-  private connectFailure(detail: string): Error {
-    return new Error(`${this.options.connectErrorMessage} (${detail})`)
+  private connectFailure(
+    detail: string,
+    options?: { wsCloseCode?: number; needsOauthLogin?: boolean },
+    message = this.options.connectErrorMessage
+  ): GatewayConnectError {
+    return new GatewayConnectError(`${message} (${detail})`, options)
   }
 
   close(): void {
+    const attempt = this.attempt
+
+    // Settle a pending attempt eagerly before invalidate() drops the socket.
+    // A raw-open socket was a real transport waiting on gateway.ready; a
+    // CONNECTING socket never established one.
+    if (attempt && !attempt.settled && this.settleConnectAttempt(attempt)) {
+      this.setState('closed')
+      attempt.reject(
+        new GatewayConnectError(
+          this.socket?.readyState === WebSocket.OPEN
+            ? this.options.closedErrorMessage
+            : this.options.connectErrorMessage
+        )
+      )
+    }
+
     this.invalidate()
   }
 
@@ -391,11 +526,41 @@ export class JsonRpcGatewayClient {
     timeoutMs = this.options.requestTimeoutMs,
     signal?: AbortSignal
   ): Promise<T> {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+    const socket = this.socket
+
+    if (!socket || this.state !== 'open' || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
     return this.channel.request<T>(method, params, timeoutMs, signal, () => new Error(this.options.notConnectedErrorMessage))
+  }
+
+  private parseMessage(raw: unknown): {
+    frame: { method?: unknown; params?: GatewayEvent }
+    text: string
+  } | null {
+    const text = wireFrameText(raw)
+
+    if (text === null) {
+      return null
+    }
+
+    let parsed: unknown
+
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return null
+    }
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return null
+    }
+
+    return {
+      frame: parsed as { method?: unknown; params?: GatewayEvent },
+      text
+    }
   }
 
   private handleEvent(event: GatewayEvent): void {
@@ -587,6 +752,23 @@ export class JsonRpcGatewayClient {
         this.dispatchIfNewer(event)
       }
     }
+  }
+
+  private settleConnectAttempt(attempt: ConnectAttempt): boolean {
+    if (attempt.settled || this.attempt !== attempt) {
+      return false
+    }
+
+    attempt.settled = true
+
+    if (attempt.timer !== undefined) {
+      clearTimeout(attempt.timer)
+      attempt.timer = undefined
+    }
+
+    this.attempt = null
+
+    return true
   }
 
   /** Forget the current socket generation, fail its calls, and go 'closed'. */
