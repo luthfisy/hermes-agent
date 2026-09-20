@@ -1,30 +1,39 @@
 # skills/ + optional-skills/ — bundled skills, authoring standards, curator
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/creating-skills.md`;
 user docs: `website/docs/user-guide/features/skills.md`, `curator.md`.
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 ## Two surfaces
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 - **`skills/`** — built-in, loadable by default, organised by category (`skills/github/`, `skills/mlops/`).
 - **`optional-skills/`** — heavier/niche skills shipped but NOT active; installed via
   `hermes skills install official/<category>/<skill>` (adapter `tools/skills_hub_official.py`
   `OptionalSkillSource`). Categories: `autonomous-ai-agents, blockchain, communication, creative,
   devops, email, health, mcp, migration, mlops, productivity, research, security, web-development`.
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 Reviewing a skill PR: check the target directory — heavy-dep or niche skills go to `optional-skills/`.
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 ## SKILL.md frontmatter
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 `name`, `description`, `version`, `author`, `license`, `platforms` (OS gate: `[macos]`,
 `[linux, macos]`, ...), `metadata.hermes.tags`, `metadata.hermes.category`,
 `metadata.hermes.related_skills`, `metadata.hermes.config` (config.yaml settings the skill needs —
 stored under `skills.config.<key>`, prompted during setup, injected at load). Top-level `tags:` /
 `category:` are accepted and mirrored from `metadata.hermes.*` by the loader.
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 ## Authoring standards (HARDLINE — enforced by `tests/skills/test_authoring_standards.py`)
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 Every new or modernised skill — bundled, optional, or contributed — meets all of these before merge:
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 1. **`description` ≤ 60 chars, one sentence, ends with a period.** Long descriptions bloat listings
    and dilute attention when many skills load. State the capability, not the implementation; no
    marketing words ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name.
@@ -55,12 +64,15 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
 8. **`.env.example` additions sit in a clearly delimited block.** Contributor copies of the file are
    usually stale; edits outside the skill's own block are dropped during salvage.
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 No `offset`/`limit` pagination on skill-loading tools — the agent must read a skill fully (root).
 The salvage/modernisation checklist for external skill PRs is `references/new-skill-pr-salvage.md`
 in the `hermes-agent-dev` skill.
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 ## Curator (skill lifecycle)
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 Background maintenance that tracks usage on agent-created skills and auto-archives stale ones;
 archives go to `~/.hermes/skills/.archive/` and are restorable. Core `agent/curator.py` (review
 loop, auto-transitions, LLM review prompt) + `agent/curator_backup.py` (pre-run tar.gz snapshots);
@@ -70,6 +82,7 @@ prune|backup|rollback`; telemetry `tools/skill_usage.py` owns `~/.hermes/skills/
 `pinned`). Config `curator:` — `enabled, interval_hours, min_idle_hours, stale_after_days,
 archive_after_days, backup.*`; its LLM calls route through `auxiliary` (`agent/AGENTS.md`).
 
+9. **Every written file must end with a trailing newline (`n`); auto-detect and auto-resolve the mutation before commit.** The `write_file` / `patch` agent paths have dropped terminal newlines, silently mutating files. This corrupts markdown/frontmatter and fails docs generation. Behaviour is automatic, not a post-step: after any write or patch, confirm `content.endswith(chr(10))`; if not, append the trailing newline and re-verify. Before `git add`, batch-verify every file in the change set ends in a newline; fix any straggler in the same pass. Never ship a file missing its trailing newline.
 Invariants: touches only `created_by: "agent"` skills (bundled + hub-installed are off-limits;
 `prune_builtins` lets the deterministic inactivity walk archive bundled skills but never adds them
 to the LLM pass's candidate list, and neither are `skills.disabled` names, which `skill_view`
