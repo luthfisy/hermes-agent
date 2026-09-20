@@ -734,6 +734,12 @@ export const en: Translations = {
       hideCodeDiffsDesc: 'Show file edits as inline tool rows with added/removed line counts, without the code.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
+      codeBlockCollapseTitle: 'Code Block Height',
+      codeBlockCollapseDesc:
+        'Compact folds code blocks past about seven lines, Tall past about twenty. Off never folds them, so long blocks stay fully selectable.',
+      codeBlockCollapseCompact: 'Compact',
+      codeBlockCollapseTall: 'Tall',
+      codeBlockCollapseOff: 'Off',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,

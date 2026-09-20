@@ -492,6 +492,12 @@ export const ja = defineLocale({
       hideCodeDiffsDesc: 'ファイル編集は追加・削除行数付きのインラインツール行で表示し、コードは表示しません。',
       reasoningCollapsedTitle: '思考ブロックをデフォルトで折りたたむ',
       reasoningCollapsedDesc: 'ストリーミング中の推論を、開くまで折りたたんだまま利用できるようにします。',
+      codeBlockCollapseTitle: 'コードブロックの高さ',
+      codeBlockCollapseDesc:
+        'コンパクトは約 7 行、トールは約 20 行を超えると折りたたみます。オフでは折りたたまず、長いブロックも全体を選択できます。',
+      codeBlockCollapseCompact: 'コンパクト',
+      codeBlockCollapseTall: 'トール',
+      codeBlockCollapseOff: 'オフ',
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
