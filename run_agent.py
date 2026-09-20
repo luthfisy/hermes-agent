@@ -226,6 +226,20 @@ class _StreamErrorEvent(Exception):
         self.body: Dict[str, Any] = {"error": {"message": message, "code": code, "param": param, "type": "error"}}
 
 
+# ── Topic Signal Parser ───────────────────────────────────────────
+_TOPIC_RE = re.compile(r"^TOPIC:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _parse_topic(content: str) -> tuple[str, Optional[str]]:
+    """Extract TOPIC: <name> from content. Returns (cleaned_content, topic_name)."""
+    m = _TOPIC_RE.search(content)
+    if m:
+        name = m.group(1).strip()
+        content = content[: m.start()] + content[m.end() :]
+        return content.strip(), name
+    return content.strip(), None
+
+
 class AIAgent(
     ClientLifecycleMixin, StreamDeliveryMixin, StatusOutputMixin, ApiRequestHooksMixin, ApiErrorSummaryMixin,
     InterruptControlMixin, TurnExplainersMixin, ActivityTrackingMixin, RateLimitCreditsMixin,
@@ -422,6 +436,8 @@ class AIAgent(
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        # Topic segmentation state
+        self._active_topic_id: Optional[int] = None
         # The drifted-prompt compaction INFO is once per session, so a /new or /resume re-arms it.
         self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
@@ -722,6 +738,97 @@ class AIAgent(
         last = stripped[-1]
         # Closing punctuation/brackets, a fenced-code close, or an emoji (Misc Symbols, Dingbats, Emoticons, ...).
         return stripped.endswith("```") or last in '.!?:)"\']}。！？：）】」』》^' or ord(last) >= 0x1F300
+
+    def _process_topic_signals(self, content: str) -> str:
+        """Parse TOPIC: <name> from assistant content.
+
+        Matches name against existing topics: switch if match, create if new.
+        Returns cleaned content.
+        """
+        cleaned, name = _parse_topic(content)
+        if not name:
+            return cleaned
+
+        # Check if name matches an existing topic
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if db and sid:
+            try:
+                existing = db.get_topics(sid)
+                name_lower = name.lower()
+                for t in existing:
+                    t_lower = t["title"].lower()
+                    # Exact match or one contains the other
+                    if t_lower == name_lower or t_lower in name_lower or name_lower in t_lower:
+                        if t["id"] != self._active_topic_id:
+                            self._switch_to_topic(t["id"])
+                        return cleaned
+                # No match: create new topic
+                self._create_topic_from_shift(name)
+            except Exception:
+                pass
+
+        return cleaned
+
+    def _create_topic_from_shift(self, name: str) -> None:
+        """Create a new topic from TOPIC: <name> signal."""
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid:
+            return
+        try:
+            if self._active_topic_id is not None:
+                db.set_active_topic(sid, 0)
+            topic_id = db.create_topic(sid, name)
+            self._active_topic_id = topic_id
+        except Exception:
+            pass
+
+    def _switch_to_topic(self, topic_id: int) -> None:
+        """Switch active topic to an existing one."""
+        db, sid = getattr(self, "_session_db", None), getattr(self, "session_id", None)
+        if not db or not sid:
+            return
+        try:
+            if db.set_active_topic(sid, topic_id):
+                self._active_topic_id = topic_id
+                self._invalidate_system_prompt()
+        except Exception:
+            pass
+
+    def _auto_create_first_topic(self, first_message: str) -> Optional[int]:
+        """Create the initial topic before a first user row enters the DB write lock."""
+        db, sid = getattr(self, "_session_db", None), getattr(self, "session_id", None)
+        if not db or not sid:
+            return None
+        try:
+            existing = db.get_topics(sid)
+            if existing:
+                active = next((topic for topic in existing if topic["state"] == "active"), None)
+                return active["id"] if active else None
+            name = first_message[:40].strip() if first_message else "new session"
+            topic_id = db.create_topic(sid, name or "new session")
+            self._active_topic_id = topic_id
+            return topic_id
+        except Exception:
+            return None
+
+    def _ensure_topic_for_session(self) -> None:
+        """Ensure a first topic exists before persistence acquires its write lock."""
+        if getattr(self, "_active_topic_id", None) is not None:
+            return
+        db, sid = getattr(self, "_session_db", None), getattr(self, "session_id", None)
+        if not db or not sid:
+            return
+        try:
+            existing = db.get_topics(sid)
+            active = next((topic for topic in existing if topic["state"] == "active"), None)
+            if active:
+                self._active_topic_id = active["id"]
+            elif not existing:
+                self._active_topic_id = db.create_topic(sid, "new session")
+        except Exception:
+            pass
 
     def _is_ollama_glm_backend(self) -> bool:
         """Ollama-hosted GLM models misreport finish_reason='stop'. Matches only explicit Ollama signatures

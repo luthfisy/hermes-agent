@@ -26,8 +26,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
-                   display_metadata, display_identity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   display_metadata, display_identity, topic_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -268,7 +268,7 @@ class SessionMessagesMixin:
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
-            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
+            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)), msg.get("topic_id"))
 
     @staticmethod
     def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
@@ -291,7 +291,8 @@ class SessionMessagesMixin:
         effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
-        turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> int:
+        turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
+        topic_id: Optional[int] = None) -> int:
         """Append one message; returns the row id and bumps the session counters. ``platform_message_id``:
         the platform's own id. ``api_content``: byte-fidelity sidecar, the exact string sent to the API when
         it differed from ``content``, stored as sent except lone surrogates."""
@@ -311,6 +312,91 @@ class SessionMessagesMixin:
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    # ── Topic persistence ───────────────────────────────────────────────
+
+    def create_topic(self, session_id: str, title: str, summary: Optional[str] = None) -> int:
+        """Create an active topic for *session_id* and return its row id."""
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO session_topics
+                   (session_id, title, summary, state, created_at, last_active_at)
+                   VALUES (?, ?, ?, 'active', ?, ?)""",
+                (session_id, title, summary, now, now),
+            )
+            return cursor.lastrowid
+
+        return self._execute_write(_do)
+
+    def get_topics(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return session topics in most-recently-active order."""
+        rows = self._read_all(
+            """SELECT id, title, summary, message_count, state, created_at, last_active_at
+               FROM session_topics WHERE session_id = ? ORDER BY last_active_at DESC""",
+            (session_id,),
+        )
+        return [dict(row) for row in rows]
+
+    def get_active_topic(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the current active topic, if any."""
+        row = self._read_one(
+            """SELECT id, title, summary, message_count, state, created_at, last_active_at
+               FROM session_topics WHERE session_id = ? AND state = 'active'
+               ORDER BY last_active_at DESC LIMIT 1""",
+            (session_id,),
+        )
+        return dict(row) if row else None
+
+    def set_active_topic(self, session_id: str, topic_id: int) -> bool:
+        """Atomically select an existing topic, warming the previous active topic."""
+        now = time.time()
+
+        def _do(conn):
+            target = conn.execute(
+                "SELECT id FROM session_topics WHERE id = ? AND session_id = ?",
+                (topic_id, session_id),
+            ).fetchone()
+            if target is None:
+                return False
+            conn.execute(
+                """UPDATE session_topics SET state = 'warm', last_active_at = ?
+                   WHERE session_id = ? AND state = 'active'""",
+                (now, session_id),
+            )
+            conn.execute(
+                """UPDATE session_topics SET state = 'active', last_active_at = ?
+                   WHERE id = ? AND session_id = ?""",
+                (now, topic_id, session_id),
+            )
+            return True
+
+        return self._execute_write(_do)
+
+    def update_topic_message_count(self, topic_id: int, count_delta: int = 1) -> None:
+        """Adjust one topic's persisted message count."""
+        def _do(conn):
+            conn.execute(
+                """UPDATE session_topics SET message_count = message_count + ?, last_active_at = ?
+                   WHERE id = ?""",
+                (count_delta, time.time(), topic_id),
+            )
+        self._execute_write(_do)
+
+    def get_topic_messages(self, session_id: str, topic_id: int, include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """Load one topic's transcript rows, decoding stored message content."""
+        active_clause = "" if include_inactive else " AND active = 1"
+        rows = self._read_all(
+            f"SELECT * FROM messages WHERE session_id = ? AND topic_id = ?{active_clause} ORDER BY id",
+            (session_id, topic_id),
+        )
+        result = []
+        for row in rows:
+            message = dict(row)
+            message["content"] = self._decode_content(message["content"])
+            result.append(message)
+        return result
 
     def append_delegation_delivery(self, session_id: str, content: str, metadata: Dict[str, Any]) -> int:
         """Record a detached API result once, between client turns, including replay after rotation.
@@ -650,7 +736,7 @@ class SessionMessagesMixin:
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id",
             [session_id, *tail_ids] if retarget else tail_ids)
 
-    def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
+    def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]], topic_id: Optional[int] = None,
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
         lock_holder: Optional[str] = None, tail_count: int = 0) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
@@ -682,26 +768,31 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            topic_where = "session_id = ? AND active = 1"
+            topic_params: list[Any] = [session_id]
+            if topic_id is not None:
+                topic_where += " AND topic_id = ?"
+                topic_params.append(topic_id)
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
-                conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
-                (session_id, int(watermark)))
+                conn, f"SELECT id, tool_calls FROM messages WHERE {topic_where} AND id > ? ORDER BY id",
+                (*topic_params, int(watermark)))
             # Rewind targets sit AT/BELOW the watermark (all the compressor saw); unbounded, a
             # concurrent append would steal a LIMIT slot.
             rewind_ids: list[int] = []
             if tail_count > 0:
                 bound = watermark is not None
                 rewind_ids = [int(row["id"]) for row in conn.execute(
-                    f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
+                    f"SELECT id FROM messages WHERE {topic_where}{' AND id <= ?' if bound else ''} "
                     "ORDER BY id DESC LIMIT ?",
-                    (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
+                    (*topic_params, *((int(watermark or 0),) if bound else ()), int(tail_count))).fetchall()]
             rewind_ids += tail_ids
             if rewind_ids:
                 placeholders = _placeholders(rewind_ids)
                 conn.execute("UPDATE messages SET active = 0, compacted = 0 "
-                    f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
-                conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
+                    f"WHERE id IN ({placeholders})", rewind_ids)
+                conn.execute(f"UPDATE messages SET active = 0, compacted = 1 WHERE {topic_where} AND id NOT IN ({placeholders})", [*topic_params, *rewind_ids])
             else:
-                conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+                conn.execute(f"UPDATE messages SET active = 0, compacted = 1 WHERE {topic_where}", topic_params)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)
@@ -859,7 +950,7 @@ class SessionMessagesMixin:
         return bool(self._execute_write(_do))
 
     def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
-                             latest: bool) -> List[Any]:
+                             latest: bool, topic_id: Optional[int] = None) -> List[Any]:
         """Project a legacy read-only display page without retaining transcript payloads."""
         representatives: Dict[bytes, Tuple[int, int]] = {}
         with self._read_ctx() as conn:
@@ -870,11 +961,13 @@ class SessionMessagesMixin:
                     ("idx_messages_session_id",),
                 ).fetchone() is not None
                 index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
+                topic_clause = " AND topic_id = ?" if topic_id is not None else ""
+                topic_params = (topic_id,) if topic_id is not None else ()
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
                     f"display_kind, display_metadata FROM messages {index_hint} "
-                    f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
-                    (session_id,))
+                    f"WHERE session_id = ?{active_clause}{topic_clause} ORDER BY id ASC",
+                    (session_id, *topic_params))
                 for row in rows:
                     identity = self._display_identity(self._display_dedupe_key(row))
                     current = representatives.get(identity)
@@ -890,9 +983,9 @@ class SessionMessagesMixin:
                 for start in range(0, len(selected_ids), 900):
                     chunk = selected_ids[start:start + 900]
                     selected.update({row["id"]: row for row in conn.execute(
-                        f"SELECT * FROM messages WHERE session_id = ?{active_clause} "
+                        f"SELECT * FROM messages WHERE session_id = ?{active_clause}{topic_clause} "
                         f"AND id IN ({_placeholders(chunk)})",
-                        (session_id, *chunk))})
+                        (session_id, *topic_params, *chunk))})
                 return [selected[row_id] for row_id in selected_ids if row_id in selected]
             finally:
                 if conn.in_transaction:
@@ -927,42 +1020,48 @@ class SessionMessagesMixin:
 
     def get_messages(self, session_id: str, include_inactive: bool = False, include_compacted: bool = False,
                      limit: Optional[int] = None, offset: int = 0, latest: bool = False,
-                     after_id: Optional[int] = None) -> List[Dict[str, Any]]:
+                     after_id: Optional[int] = None, topic_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Load messages in insertion order (id, never timestamp: clocks regress). ``include_inactive``:
         rewind rows too; ``include_compacted``: compaction-archived display history (not rewind rows).
-        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging."""
+        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging.
+        ``topic_id`` scopes every read path, including deduplicated compaction display reads."""
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
+        topic_clause = " AND topic_id = ?" if topic_id is not None else ""
+        topic_params = [topic_id] if topic_id is not None else []
         if include_compacted and not include_inactive and self._ensure_display_order(session_id):
             direction = "DESC" if latest else "ASC"
             sql = f"""WITH page AS (
                     SELECT display_order FROM messages
-                    WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                    WHERE session_id = ? AND (active = 1 OR compacted = 1){topic_clause}
                     GROUP BY display_order ORDER BY display_order {direction}
                     LIMIT ? OFFSET ?
                 )
                 SELECT chosen.* FROM page
                 JOIN messages AS chosen ON chosen.id = (
                     SELECT candidate.id FROM messages AS candidate
-                    WHERE candidate.session_id = ?
+                    WHERE candidate.session_id = ?{topic_clause}
                       AND candidate.display_order = page.display_order
                       AND (candidate.active = 1 OR candidate.compacted = 1)
                     ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
                 )
                 ORDER BY page.display_order ASC"""
-            rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
+            rows = self._read_all(sql, [session_id, *topic_params, -1 if limit is None else limit, offset,
+                                        session_id, *topic_params])
         elif include_compacted:
             # Read-only legacy stores cannot persist display identities; keep only fixed-width
             # identities and representative ids while scanning, then fetch the selected payloads.
             rows = self._legacy_display_page(
-                session_id, active_clause=active_clause, limit=limit, offset=offset, latest=latest)
+                session_id, active_clause=active_clause, limit=limit, offset=offset, latest=latest, topic_id=topic_id)
         else:
-            sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
+            sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}{topic_clause}"
                 f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}")
-            params: list = [session_id] if after_id is None else [session_id, after_id]
+            params: list = [session_id, *topic_params]
+            if after_id is not None:
+                params.append(after_id)
             if limit is not None or offset:
                 # SQLite's OFFSET requires LIMIT; -1 means "no limit".
                 sql += " LIMIT ? OFFSET ?"

@@ -155,6 +155,11 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     """Build the session-db row for ``msg``, applying the persist override to THIS row only."""
     role = msg.get("role", "unknown")
     content = msg.get("content")
+    topic_id = getattr(agent, "_active_topic_id", None)
+    if topic_id is None and role == "user":
+        topic_id = agent._auto_create_first_topic(content if isinstance(content, str) else "")
+    if role == "assistant" and isinstance(content, str):
+        content = agent._process_topic_signals(content)
     # api_content sidecar: exact bytes sent to the API when they differ from clean content (replay parity).
     api_content = msg.get("api_content") if isinstance(msg.get("api_content"), str) else None
     timestamp = msg.get("timestamp")
@@ -181,6 +186,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         "timestamp": timestamp, "api_content": api_content,
         "display_kind": _summary_display_kind(msg), "display_metadata": msg.get("display_metadata"),
         "platform_message_id": msg.get("platform_message_id"),  # load-bearing for restart drain-window recovery dedup
+        "topic_id": topic_id,
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
@@ -235,6 +241,13 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
         # the live transcript so forks/compaction built from memory carry one checkpoint too. Markers stay:
         # the rows are durable exactly as the dicts now read.
         drop_shadowed_checkpoints(messages)
+    for written_row in batch_rows:
+        topic_id = written_row.get("topic_id")
+        if topic_id is not None:
+            try:
+                agent._session_db.update_topic_message_count(topic_id, 1)
+            except Exception:
+                pass
 
 
 def _db_flush_adopt_compression_tip(agent) -> bool:
@@ -316,6 +329,7 @@ class SessionPersistenceMixin:
         list used by the API call (#48677 is thus closed for every persist caller, not just this one).
         """
         from agent.agent_runtime_helpers import note_turn_persisted
+        self._ensure_topic_for_session()
         with _persist_lock(self):
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
