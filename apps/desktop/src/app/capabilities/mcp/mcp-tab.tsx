@@ -1059,10 +1059,10 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
                   fleet list (with live status), so the catalog section only
                   offers what's NOT installed yet — no duplicate rows, no tab
                   flipping to find the install button. */}
-              {/* Geometry mirrors ListStrip (mb-1 h-6 pl-2) so this header
+              {/* Geometry mirrors ListStrip (mb-1 h-6 ps-2) so this header
                   lands on the exact line the sort link occupies in the
                   Skills/Tools views. */}
-              <div className="mb-1 flex h-6 shrink-0 items-center pl-2 pr-1">
+              <div className="mb-1 flex h-6 shrink-0 items-center ps-2 pe-1">
                 <span className="flex-1 text-[0.72rem] font-medium text-(--ui-text-tertiary)">{m.tabServers}</span>
                 <McpImportButton disabled={profilePending} onImport={importServers} />
               </div>
@@ -1112,7 +1112,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
               )}
               {(catalogQuery.isLoading || availableCatalog.length > 0) && (
                 <>
-                  <div className="mb-1 mt-3 flex h-6 shrink-0 items-center border-t border-(--ui-stroke-quaternary) pl-2 pr-1 pt-2">
+                  <div className="mb-1 mt-3 flex h-6 shrink-0 items-center border-t border-(--ui-stroke-quaternary) ps-2 pe-1 pt-2">
                     <span className="text-[0.72rem] font-medium text-(--ui-text-tertiary)">{m.tabCatalog}</span>
                   </div>
                   <McpCatalog
@@ -1248,7 +1248,7 @@ function ServerConfig({
           config: items-start with per-element top margins that reproduce the
           row's h-11 centering exactly (h-5 controls → mt-3, size-6 avatar →
           mt-2.5, h-4 switch → mt-3.5) no matter how tall the text column gets. */}
-      <div className="flex items-start gap-2 pr-1.5">
+      <div className="flex items-start gap-2 pe-1.5">
         <Tip label={m.allServers}>
           <Button
             aria-label={m.allServers}
@@ -1794,7 +1794,7 @@ function McpRow({
   return (
     <div
       className={cn(
-        'group/row row-hover flex h-11 w-full shrink-0 items-center gap-2 rounded-md pl-2 pr-1.5 hover:text-foreground',
+        'group/row row-hover flex h-11 w-full shrink-0 items-center gap-2 rounded-md ps-2 pe-1.5 hover:text-foreground',
         active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
       id={`mcp-server-${name}`}

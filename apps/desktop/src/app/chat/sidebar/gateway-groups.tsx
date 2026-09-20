@@ -111,7 +111,7 @@ export function GatewayProfileGroups({
           renderRows={renderRows}
         >
           {gatewayProfiles.has(group.id) && (
-            <div className="ml-3 border-l border-border/50 pl-1">
+            <div className="ms-3 border-l border-border/50 ps-1">
               <GatewayProfileGroups
                 groups={gatewayProfiles.get(group.id)!}
                 nested

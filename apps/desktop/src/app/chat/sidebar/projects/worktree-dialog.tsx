@@ -264,7 +264,7 @@ export function WorktreeDialog() {
                         <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.8rem" />
                         <span className="truncate">{option.label}</span>
                         {option === activeOption && (
-                          <Codicon className="ml-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
+                          <Codicon className="ms-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
                         )}
                       </CommandItem>
                     ))}
@@ -297,7 +297,7 @@ export function WorktreeDialog() {
                       size="0.8rem"
                     />
                     <span className="truncate">{branch.name}</span>
-                    <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
+                    <span className="ms-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
                       {branchActionLabel(branch, p)}
                     </span>
                   </CommandItem>

@@ -594,7 +594,7 @@ export function LocalModelsSettings() {
                       {isLoaded && livePlacement && (
                         <Tip label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}>
                           <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
-                            <Cpu className="mr-1 size-3" />
+                            <Cpu className="me-1 size-3" />
                             {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
                             {' · '}
                             {livePlacement.spilled ? copy.placementSpilled : copy.placementResident}
@@ -605,7 +605,7 @@ export function LocalModelsSettings() {
 
                       {isLoadingNow && (
                         <Pill>
-                          <Loader2 className="mr-1 size-3 animate-spin" />
+                          <Loader2 className="me-1 size-3 animate-spin" />
                           {copy.loadingPill}
                         </Pill>
                       )}
@@ -613,7 +613,7 @@ export function LocalModelsSettings() {
                       {isActive ? (
                         <Tip label={copy.activeDetail}>
                           <Pill tone="primary">
-                            <Check className="mr-1 size-3" />
+                            <Check className="me-1 size-3" />
                             {copy.activePill}
                           </Pill>
                         </Tip>
@@ -689,21 +689,21 @@ export function LocalModelsSettings() {
                       {!model.fits ? (
                         <Tip label={model.fit_detail ?? model.fit_summary}>
                           <Pill tone="destructive">
-                            <Cpu className="mr-1 size-3" />
+                            <Cpu className="me-1 size-3" />
                             {copy.pillTooBig}
                           </Pill>
                         </Tip>
                       ) : model.spilled ? (
                         <Tip label={model.quant_reason ?? model.fit_summary}>
                           <Pill tone="warn">
-                            <Cpu className="mr-1 size-3" />
+                            <Cpu className="me-1 size-3" />
                             {copy.pillUsesRam}
                           </Pill>
                         </Tip>
                       ) : (
                         <Tip label={model.quant_reason ?? model.fit_summary}>
                           <Pill tone="success">
-                            <Cpu className="mr-1 size-3" />
+                            <Cpu className="me-1 size-3" />
                             {copy.pillFitsGpu}
                           </Pill>
                         </Tip>
@@ -782,7 +782,7 @@ export function LocalModelsSettings() {
                       {isLoaded && livePlacement && (
                         <Tip label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}>
                           <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
-                            <Cpu className="mr-1 size-3" />
+                            <Cpu className="me-1 size-3" />
                             {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
                             {' · '}
                             {livePlacement.spilled ? copy.placementSpilled : copy.placementResident}
@@ -793,14 +793,14 @@ export function LocalModelsSettings() {
 
                       {isLoadingNow && (
                         <Pill>
-                          <Loader2 className="mr-1 size-3 animate-spin" />
+                          <Loader2 className="me-1 size-3 animate-spin" />
                           {copy.loadingPill}
                         </Pill>
                       )}
 
                       {isActive ? (
                         <Pill tone="primary">
-                          <CheckCircle2 className="mr-1 size-3" />
+                          <CheckCircle2 className="me-1 size-3" />
                           {copy.activePill}
                         </Pill>
                       ) : (
@@ -993,7 +993,7 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
     <SettingsSection
       aside={
         <Button onClick={sideload} size="sm" variant="outline">
-          <FolderOpen className="mr-1 size-3.5" />
+          <FolderOpen className="me-1 size-3.5" />
           {copy.sideloadButton}
         </Button>
       }
@@ -1006,7 +1006,7 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
-            className="w-full rounded-md border border-(--ui-border) bg-transparent py-1.5 pl-8 pr-3 text-[0.8rem] outline-none placeholder:text-muted-foreground focus:border-primary"
+            className="w-full rounded-md border border-(--ui-border) bg-transparent py-1.5 ps-8 pe-3 text-[0.8rem] outline-none placeholder:text-muted-foreground focus:border-primary"
             onChange={e => setQuery(e.target.value)}
             placeholder={copy.browsePlaceholder}
             value={query}
@@ -1043,7 +1043,7 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
               />
 
               {openRepo === hit.repo && (
-                <div className="ml-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-1.5 border-l border-(--ui-border) py-1 pl-3">
+                <div className="ms-4 grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-1.5 border-l border-(--ui-border) py-1 ps-3">
                   {listing && (
                     <p className="col-span-full flex items-center gap-2 py-1 text-[0.75rem] text-muted-foreground">
                       <Loader2 className="size-3 animate-spin" />
@@ -1097,7 +1097,7 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
                         ) : (
                           <span className="flex items-center justify-between gap-2">
                             <Pill tone={fitTone(group.fit)}>
-                              <Cpu className="mr-1 size-3" />
+                              <Cpu className="me-1 size-3" />
                               {group.fit === 'fits-gpu'
                                 ? copy.pillFitsGpu
                                 : group.fit === 'needs-ram'

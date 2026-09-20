@@ -267,7 +267,7 @@ function AssigneeMenu({
           <DropdownMenuItem key={profile.name} onSelect={() => onReassign(profile.name)}>
             <Avatar name={profile.name} size="0.875rem" />
             {profile.name}
-            {profile.name === current && <Codicon className="ml-auto" name="check" size="0.8rem" />}
+            {profile.name === current && <Codicon className="ms-auto" name="check" size="0.8rem" />}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -320,7 +320,7 @@ function CommentComposer({
     <div className="flex flex-col gap-1.5">
       <div className="relative">
         <Textarea
-          className={cn('field-sizing-content max-h-40 min-h-0 resize-none', running ? 'pr-[3.5rem]' : 'pr-[5rem]')}
+          className={cn('field-sizing-content max-h-40 min-h-0 resize-none', running ? 'pe-[3.5rem]' : 'pe-[5rem]')}
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
             if (isSubmitEnter(event) && !event.shiftKey) {
@@ -509,7 +509,7 @@ function EstimateSection({ id }: { id: string }) {
             <Tip label={k.reEstimate}>
               <Button
                 aria-label={k.reEstimate}
-                className="ml-auto"
+                className="ms-auto"
                 disabled={est.isPending}
                 onClick={() => est.mutate()}
                 size="icon-xs"
@@ -688,7 +688,7 @@ export function TaskDrawer({
               {shortId(task.id)}
             </span>
           )}
-          <div className="ml-auto flex items-center gap-0.5">
+          <div className="ms-auto flex items-center gap-0.5">
             {task && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -854,7 +854,7 @@ export function TaskDrawer({
                   {detail.comments.map(comment => (
                     <li className="text-[0.75rem]" key={comment.id}>
                       <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
-                      <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">
+                      <span className="ms-2 text-[0.625rem] text-(--ui-text-quaternary)">
                         {ago(comment.created_at)}
                       </span>
                       <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
@@ -888,7 +888,7 @@ export function TaskDrawer({
                               {extra}
                             </span>
                           )}
-                          <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
+                          <span className="ms-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
                         </li>
                       )
                     })}
@@ -916,7 +916,7 @@ export function TaskDrawer({
                                 {duration(run.started_at, run.ended_at)}
                               </span>
                             )}
-                            <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
+                            <span className="ms-auto shrink-0 text-(--ui-text-quaternary)">
                               {ago(run.ended_at ?? run.started_at)}
                             </span>
                           </div>

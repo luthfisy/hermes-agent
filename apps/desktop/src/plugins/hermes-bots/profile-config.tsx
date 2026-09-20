@@ -467,7 +467,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                       <span className="min-w-0">
                         <span>{m.name}</span>
                         {m.fromCatalog && !needsSetup ? (
-                          <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
+                          <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
                             {m.installed ? 'catalog · installed' : 'catalog'}
                           </span>
                         ) : null}
