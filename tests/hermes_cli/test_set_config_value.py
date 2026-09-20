@@ -1197,11 +1197,11 @@ class TestSensitiveConfigKeyGuard:
         ("approvals.mode", "off"),          # string-typed default → stays string
         ("approvals.cron_mode", "off"),     # string-typed default → stays string
         ("security.redact_secrets", False),  # bool default → "off" coerces to False
-        ("command_allowlist", "git push --force"),  # list default → literal string
+        ("command_allowlist", ["git push --force"]),  # list slot → YAML list literal (#114471)
     ])
     def test_sensitive_key_allowed_with_approval_override(self, _isolated_hermes_home, key, expected):
         """approval_override (the dedicated /approvals channel) may write."""
-        set_config_value(key, "off" if key != "command_allowlist" else "git push --force", approval_override=True)
+        set_config_value(key, "off" if key != "command_allowlist" else '["git push --force"]', approval_override=True)
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
