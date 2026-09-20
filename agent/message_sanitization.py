@@ -125,12 +125,13 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
     Also caps replayed tool-call ids at ``MAX_TOOL_CALL_ID_LENGTH`` (see
     ``clamp_outbound_tool_call_ids``). This runs for EVERY api_mode — it sits above the
     ``api_mode == "codex_responses"`` branch in turn_api_request — so the cap is the one place
-    that covers Chat Completions, Responses and every other wire shape alike.
+    that covers Chat Completions, Responses and every other wire shape alike. Copy-on-write:
+    ``api_kwargs["messages"]`` is REBOUND to the clamped list, never mutated in place.
     """
     _sanitize_structure_surrogates(api_kwargs)
     if agent._force_ascii_payload:
         _sanitize_structure_non_ascii(api_kwargs)
-    clamp_outbound_tool_call_ids(api_kwargs.get("messages"))
+    api_kwargs["messages"] = clamp_outbound_tool_call_ids(api_kwargs.get("messages"))
 
 
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
@@ -534,42 +535,95 @@ MAX_TOOL_CALL_ID_LENGTH = 64
 
 
 def clamp_tool_call_id(call_id: Any) -> Any:
-    """Cap a tool-call id at ``MAX_TOOL_CALL_ID_LENGTH`` chars via a deterministic hash surrogate.
+    """Cap a tool-call id at ``MAX_TOOL_CALL_ID_LENGTH`` chars via deterministic hash surrogates.
 
-    Composite Responses ids (``call_x|fc_y``) keep their response-item half: the cap applies to the
-    call half, which is the pairing key (mirrors ``coalesce_tool_call_id``'s split).
+    Composite Responses ids (``call_x|fc_y``) keep their response-item half when the WHOLE id still
+    fits after the call half is clamped; a pathological tail is itself hashed to fit, so every
+    returned id is within the cap. Mirrors ``coalesce_tool_call_id``'s split (the call half is the
+    pairing key). Pure function of the input: the same original id always renders the same bytes.
     """
     if not isinstance(call_id, str) or not call_id:
         return call_id
-    head, sep, tail = call_id.partition("|")
-    if len(head) <= MAX_TOOL_CALL_ID_LENGTH:
+    if len(call_id) <= MAX_TOOL_CALL_ID_LENGTH:
         return call_id
-    surrogate = f"call_{hashlib.sha256(head.encode('utf-8', errors='replace')).hexdigest()[:32]}"
-    return f"{surrogate}{sep}{tail}"
+    head, sep, tail = call_id.partition("|")
+    head_out = head
+    if len(head) > MAX_TOOL_CALL_ID_LENGTH:
+        head_out = f"call_{hashlib.sha256(head.encode('utf-8', errors='replace')).hexdigest()[:32]}"
+    if len(head_out) + len(sep) + len(tail) <= MAX_TOOL_CALL_ID_LENGTH:
+        return f"{head_out}{sep}{tail}"
+    budget = MAX_TOOL_CALL_ID_LENGTH - len(head_out) - len(sep)
+    if budget >= 8:
+        # Keep a deterministic, shortened stand-in for the response-item half.
+        return f"{head_out}{sep}{hashlib.sha256(tail.encode('utf-8', errors='replace')).hexdigest()[:budget]}"
+    # No room for a meaningful tail (head alone fills the cap): the call half is the pairing key.
+    return head_out
 
 
-def clamp_outbound_tool_call_ids(messages: Any) -> bool:
-    """Clamp both sides of every tool-call pair in ``messages`` in place. True when anything changed."""
-    changed = False
-    for msg in messages if isinstance(messages, list) else ():
+def _clamp_tool_call_entry(tc: dict) -> tuple[dict, bool]:
+    """Copy-on-write clamp of one ``tool_calls`` entry: returns ``(entry, changed)``. The input is
+    never mutated — it may alias the live transcript."""
+    out, changed = tc, False
+    for key in ("id", "call_id"):
+        if key not in out:
+            continue
+        clamped = clamp_tool_call_id(out[key])
+        if clamped == out[key]:
+            continue
+        if out is tc:
+            out = dict(tc)
+        out[key] = clamped
+        changed = True
+    return out, changed
+
+
+def clamp_outbound_tool_call_ids(messages: Any) -> Any:
+    """Wire-safe view of ``messages`` with every tool-call id capped (``MAX_TOOL_CALL_ID_LENGTH``).
+
+    Copy-on-write ON PURPOSE: ``api_kwargs["messages"]`` may alias the LIVE transcript dicts, and
+    rows already flushed to state.db carry the ORIGINAL ids — rewriting those dicts in memory would
+    diverge the live/DB pair that the ``_DB_PERSISTED_MARKER`` contract guards. The input is never
+    mutated: unchanged messages are shared as-is, only messages holding an oversized id are replaced
+    by copies in the returned list. Deterministic clamps keep the wire prefix byte-stable across
+    turns, and a later replay of the unclamped DB rows re-clamps to the same surrogates. Returns the
+    SAME list object when nothing needs clamping (the hot path allocates nothing).
+    """
+    if not isinstance(messages, list):
+        return messages
+    result = messages
+    for i, msg in enumerate(messages):
         if not isinstance(msg, dict):
             continue
-        for tc in msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else ():
-            if not isinstance(tc, dict):
-                continue
-            for key in ("id", "call_id"):
-                if key not in tc:
+        msg_out = msg
+        changed_msg = False
+        tcs = msg.get("tool_calls")
+        if isinstance(tcs, list):
+            new_tcs = None
+            for j, tc in enumerate(tcs):
+                if not isinstance(tc, dict):
                     continue
-                clamped = clamp_tool_call_id(tc[key])
-                if clamped != tc[key]:
-                    tc[key] = clamped
-                    changed = True
+                tc_out, changed = _clamp_tool_call_entry(tc)
+                if not changed:
+                    continue
+                changed_msg = True
+                if new_tcs is None:
+                    new_tcs = list(tcs)
+                new_tcs[j] = tc_out
+            if new_tcs is not None:
+                msg_out = dict(msg)
+                msg_out["tool_calls"] = new_tcs
         if "tool_call_id" in msg:
             clamped = clamp_tool_call_id(msg["tool_call_id"])
             if clamped != msg["tool_call_id"]:
-                msg["tool_call_id"] = clamped
-                changed = True
-    return changed
+                changed_msg = True
+                if msg_out is msg:
+                    msg_out = dict(msg)
+                msg_out["tool_call_id"] = clamped
+        if changed_msg:
+            if result is messages:
+                result = list(messages)
+            result[i] = msg_out
+    return result
 
 
 # -- reasoning_content policy: single owner of strip-vs-re-pad; adapters keep only SYNTAX --

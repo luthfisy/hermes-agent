@@ -7,6 +7,7 @@ the owner functions' behavior (including byte-exact hash outputs — they feed
 prompt-cache keys) and verify the legacy entry points still delegate here.
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -517,3 +518,49 @@ class TestOutboundToolCallIdCap:
         assistant, tool_msg = api_kwargs["messages"]
         assert assistant["tool_calls"][0]["id"] == short
         assert tool_msg["tool_call_id"] == short
+
+    def test_composite_id_keeps_fc_tail_when_it_fits(self):
+        # Oversized call half + a response-item half that still fits after clamping.
+        oversized = "call_" + "B" * 70 + "|fc_0abc123"
+        api_kwargs = self._pair(oversized)
+        sanitize_outbound_kwargs(SimpleNamespace(_force_ascii_payload=False), api_kwargs)
+
+        tc = api_kwargs["messages"][0]["tool_calls"][0]
+        tool_msg = api_kwargs["messages"][1]
+        assert tc["id"].endswith("|fc_0abc123")
+        assert len(tc["id"]) <= 64
+        assert tc["id"] == tool_msg["tool_call_id"] == tc["call_id"]
+
+    def test_composite_long_tail_is_hashed_under_the_cap(self):
+        # Call half fits; the response-item half alone blows the budget — it must be hashed, not
+        # passed through, or the composite still 400s.
+        oversized = "call_ok|fc_" + "Z" * 200
+        api_kwargs = self._pair(oversized)
+        sanitize_outbound_kwargs(SimpleNamespace(_force_ascii_payload=False), api_kwargs)
+
+        tc = api_kwargs["messages"][0]["tool_calls"][0]
+        tool_msg = api_kwargs["messages"][1]
+        assert tc["id"].startswith("call_ok|")
+        assert len(tc["id"]) <= 64
+        assert tc["id"] == tool_msg["tool_call_id"] == tc["call_id"]
+
+    def test_input_messages_are_never_mutated(self):
+        # api_kwargs["messages"] may alias the LIVE transcript; persisted rows carry the ORIGINAL
+        # ids, so the clamp must rebind the wire list instead of rewriting shared dicts (the
+        # live/DB pair the _DB_PERSISTED_MARKER contract guards must not diverge).
+        oversized = "call_" + "C" * 80
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"id": oversized, "call_id": oversized, "type": "function",
+                 "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": oversized, "content": "ok"},
+        ]
+        snapshot = json.loads(json.dumps(messages))
+        api_kwargs = {"messages": messages}
+        sanitize_outbound_kwargs(SimpleNamespace(_force_ascii_payload=False), api_kwargs)
+
+        assert messages == snapshot, "live transcript dicts must stay untouched"
+        assert api_kwargs["messages"] is not messages, "wire must be a rebound list"
+        tc = api_kwargs["messages"][0]["tool_calls"][0]
+        assert len(tc["id"]) <= 64
+        assert tc["id"] == api_kwargs["messages"][1]["tool_call_id"]
