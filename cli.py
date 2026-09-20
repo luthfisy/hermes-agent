@@ -2601,6 +2601,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self.verbose = bool(verbose) if verbose is not None else False
 
         self.streaming_enabled = display.get("streaming", False)
+        self.interim_assistant_messages = display.get("interim_assistant_messages", False)
         self.show_timestamps = display.get("timestamps", False)
         self.timestamp_format = display.get("timestamp_format", "%H:%M")
         _frm = str(display.get("final_response_markdown", "strip")).strip().lower()
@@ -4543,6 +4544,7 @@ def _configure_quiet_agent(agent) -> None:
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
     agent.reasoning_callback = None
+    agent.interim_assistant_callback = None
     # The diff/progress callbacks print directly and are gated by neither quiet_mode nor
     # tool_progress_mode, so they must go too; "off" also covers the executor's direct prints.
     agent.tool_progress_callback = None
