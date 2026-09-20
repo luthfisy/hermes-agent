@@ -848,13 +848,14 @@ class GatewayBusySessionMixin:
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
         "commands", "profile", "login", "update", "version",
+        "title", "fast", "reasoning", "usage", "whoami",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
-        "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
+        "topic", "platform", "stop", "memory", "skills",
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
-        "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
-        "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
+        "sethome", "compress", "topup", "insights", "reload-mcp", "reload-skills",
+        "bundles", "debug", "resume", "sessions", "branch", "rollback", "diff", "goal",
         "loop", "refine", "review", "voice",
     )
 
@@ -893,8 +894,8 @@ class GatewayBusySessionMixin:
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
         """Dispatch a recognized slash command while an agent is running.
 
-        Order: ``busy_handler`` (mid-run variant) → ``busy_policy == "dispatch"`` (normal handler)
-        → catch-all reject text. Rejecting is required rather than falling through to
+        Order: ``busy_handler`` (mid-run variant) → ``defer_until_idle`` (post-commit command queue)
+        → ``busy_policy == "dispatch"`` (normal handler) → catch-all reject text. Rejecting is required rather than falling through to
         interrupt + discard: commands like /model, /reasoning, /voice, /insights, /title,
         /resume, /retry, /undo, /compress, /usage, /reload-mcp, /sethome, /reset (all
         registered as Discord slash commands) would interrupt the agent AND get silently
@@ -914,6 +915,13 @@ class GatewayBusySessionMixin:
             reject_text = self._BUSY_REJECT_TEXT.get(handler_key)
             if reject_text is not None:
                 return reject_text
+        if policy == "defer_until_idle":
+            adapter = self._delivery_adapter_for(source)
+            if adapter is None or not hasattr(adapter, "defer_command_until_idle"):
+                return f"⚠️ `/{name}` could not be scheduled because this session has no deferred-command queue."
+            depth = adapter.defer_command_until_idle(quick_key, event)
+            suffix = f" ({depth} deferred)" if depth > 1 else ""
+            return f"⏳ `/{name}` scheduled after the current turn commits{suffix}."
         if policy in ("dispatch", "interrupt_then_dispatch"):
             plain = self._gateway_plain_command_handlers().get(name)
             if plain is not None:
