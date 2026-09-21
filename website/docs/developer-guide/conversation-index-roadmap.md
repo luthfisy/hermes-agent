@@ -316,7 +316,7 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 | 3. Async index capability | Complete | Plugin outage never blocks chat |
 | 4. Search/reference path | Complete | Derived search cannot bypass core authorization |
 | 5. Rebuild/status | Complete | Lost index rebuilds from canonical state |
-| 6. Canonical-owner acceptance | Planned | Gateway/worker paths produce one canonical row and one derived entry |
+| 6. Canonical-owner acceptance | Complete | Gateway/worker paths produce one canonical row and one derived entry |
 | 7. Semantic compaction proposals | Later/separate | Optional compactor cannot mutate canonical history directly |
 
 ## Phase 0 — Contract and baseline
@@ -502,19 +502,37 @@ successful rebuild.
 
 ## Phase 6 — Canonical-owner acceptance
 
-Before declaring the seam stable, test the combined ownership model represented by #106742 or its landed successor:
+**Status: complete.** Acceptance now binds the conversation-index seam to the landed
+multiplex gateway ownership model rather than the pre-cutover #106742 branch.
+
+The gateway `SessionStore.append_to_transcript()` owner path is exercised against a real
+`SessionDB`, followed by the existing `skip_db=True` non-owning worker/fallback path.
+The acceptance case proves that this combined flow produces exactly one canonical
+message row and one transactional conversation-change record. A separately constructed
+`SessionStore` then resumes the same canonical transcript, demonstrating that another
+surface reads the shared owner state rather than a private transcript copy.
+
+The async `ConversationIndexConsumer` consumes that one real feed record into a fake
+derived provider. Before consumption, the provider has no entry; after one consumer pass,
+it has exactly one entry and one committed feed sequence. A second pass at the same
+durable cursor is a no-op, proving replay does not duplicate derived state. Search then
+runs through `ConversationIndexSearchService`, so the provider returns only its
+`MessageReference` and Hermes authorizes/hydrates the canonical text.
+
+The acceptance invariant is therefore:
 
 ```text
-submit via one surface
-resume/read via another
-search via index
-=> one gateway admission
-=> one canonical message
-=> one feed mutation
-=> one derived index entry
+gateway owner admission
+ -> one canonical message
+ -> one transactional feed mutation
+ -> async consumer
+ -> one derived index entry
+ -> Hermes-authorized search hydration
 ```
 
-Managed-worker transcript persistence must go through canonical owner operations; workers never bypass the feed by writing an index themselves.
+The non-owning worker/fallback path never calls the index and cannot create an additional
+canonical or feed row. Derived indexing remains downstream of canonical ownership rather
+than a second transcript writer.
 
 ## Phase 7 — Optional semantic compaction
 
