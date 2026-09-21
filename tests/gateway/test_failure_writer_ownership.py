@@ -20,6 +20,8 @@ def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdin=subprocess.DEVNULL,
         timeout=90,
     )
