@@ -290,9 +290,13 @@ def build_prompt_cache_plan(
         )
     else:
         system_markers = 0
-    planned_tools[-1]["cache_control"] = dict(marker)
-    transaction_budget = max(0, 4 - system_markers - 1)
-    for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-transaction_budget:] if transaction_budget else []:
+    # A two-tier system layout already pins the tools array in Anthropic's ordered
+    # prefix. Spending another marker there would leave only one completed-turn
+    # endpoint and lose the shared endpoint on tool-heavy consecutive turns.
+    if system_markers < 2:
+        planned_tools[-1]["cache_control"] = dict(marker)
+    transaction_budget = 3 - system_markers if system_markers < 2 else 2
+    for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-transaction_budget:]:
         _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
 
     return PromptCachePlan(messages=messages, tools=planned_tools)
