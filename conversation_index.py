@@ -6,10 +6,12 @@ records and index search references; they deliberately contain no message body.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Tuple
 
 
 class ConversationChangeType(str, Enum):
@@ -27,6 +29,91 @@ class MessageIndexState(str, Enum):
     ACTIVE = "active"
     COMPACTED = "compacted"
     INACTIVE = "inactive"
+
+
+def canonical_content_hash(storage_type: str, content_bytes: Optional[bytes]) -> str:
+    """Hash the exact SQLite storage representation used by the change feed."""
+    if not isinstance(storage_type, str) or not storage_type:
+        raise ValueError("storage_type must be non-empty")
+    payload = b"" if content_bytes is None else bytes(content_bytes)
+    digest = hashlib.sha256(storage_type.encode("ascii") + b"\0" + payload).hexdigest()
+    return f"sha256:{digest}"
+
+
+def canonical_message_index_state(active: int, compacted: int) -> MessageIndexState:
+    """Map canonical row flags to the stable derived-index state vocabulary."""
+    if int(active or 0) == 1:
+        return MessageIndexState.ACTIVE
+    if int(compacted or 0) == 1:
+        return MessageIndexState.COMPACTED
+    return MessageIndexState.INACTIVE
+
+
+def canonical_hydration_text(decoded_content: Any) -> str:
+    """Stable text representation whose character offsets are used by MessageReference."""
+    if decoded_content is None:
+        return ""
+    if isinstance(decoded_content, str):
+        return decoded_content
+    if isinstance(decoded_content, bytes):
+        return decoded_content.decode("utf-8", errors="replace")
+    try:
+        return json.dumps(
+            decoded_content, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return str(decoded_content)
+
+
+class ConversationFeedGapError(RuntimeError):
+    """The requested cursor predates the oldest retained change."""
+
+    def __init__(self, cursor: int, floor_sequence: int, high_water_sequence: int) -> None:
+        self.cursor = cursor
+        self.floor_sequence = floor_sequence
+        self.high_water_sequence = high_water_sequence
+        super().__init__(
+            f"conversation change cursor {cursor} predates retained floor {floor_sequence}; rebuild required"
+        )
+
+
+@dataclass(frozen=True)
+class ConversationFeedBounds:
+    floor_sequence: int
+    high_water_sequence: int
+
+    def __post_init__(self) -> None:
+        if self.high_water_sequence < 0 or self.floor_sequence < 1:
+            raise ValueError("invalid conversation feed bounds")
+        if self.floor_sequence > self.high_water_sequence + 1:
+            raise ValueError("feed floor cannot exceed high-water + 1")
+
+
+@dataclass(frozen=True)
+class SnapshotMessage:
+    conversation_id: str
+    message_id: int
+    content_hash: str
+    state: MessageIndexState
+    text_length: int
+    role: str
+    timestamp: float
+
+
+@dataclass(frozen=True)
+class ConversationSnapshot:
+    watermark: int
+    conversation_ids: Tuple[str, ...]
+    messages: Tuple[SnapshotMessage, ...]
+
+
+@dataclass(frozen=True)
+class HydratedMessage:
+    reference: "MessageReference"
+    state: MessageIndexState
+    text: str
+    role: str
+    timestamp: float
 
 
 @dataclass(frozen=True)

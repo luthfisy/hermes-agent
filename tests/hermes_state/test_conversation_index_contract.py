@@ -7,7 +7,17 @@ from conversation_index import (
     ConversationChangeType,
     MessageIndexState,
     MessageReference,
+    canonical_content_hash,
+    canonical_hydration_text,
 )
+
+
+def test_hash_identity_includes_sqlite_storage_type():
+    assert canonical_content_hash("text", b"1") != canonical_content_hash("integer", b"1")
+
+
+def test_hydration_text_is_deterministic_for_structured_content():
+    assert canonical_hydration_text({"b": 2, "a": [1, "x"]}) == '{"a":[1,"x"],"b":2}'
 
 
 def test_change_event_vocabulary_is_small_and_stable():

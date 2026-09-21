@@ -311,7 +311,7 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 | --- | --- | --- |
 | 0. Contract/baseline | Complete | Ownership and event semantics frozen |
 | 1. Transactional feed | Complete | Every target mutation publishes atomically |
-| 2. Source + hydration API | Planned | Stable refs can be safely hydrated |
+| 2. Source + hydration API | Complete | Stable refs can be safely hydrated |
 | 3. Async index capability | Planned | Plugin outage never blocks chat |
 | 4. Search/reference path | Planned | Derived search cannot bypass core authorization |
 | 5. Rebuild/status | Planned | Lost index rebuilds from canonical state |
@@ -368,15 +368,28 @@ content rewrite, import/profile move, deletion, pruning, and empty-session sweep
 
 ## Phase 2 — Canonical source and hydration API
 
-Add provider-neutral read surfaces for:
+**Status: complete.** Core now exposes provider-neutral, read-only source surfaces for:
 
-- feed floor/high-water and paged changes-after-cursor;
-- snapshot manifest for rebuild;
-- bounded hydration by stable message reference;
-- authorization/visibility/hash/range validation; and
-- profile-scoped enumeration.
+- feed floor/high-water plus bounded `changes-after-cursor` paging;
+- explicit `ConversationFeedGapError` when a cursor predates retained history;
+- profile-scoped physical conversation enumeration;
+- a body-free snapshot manifest captured with its feed watermark in one read transaction; and
+- bounded stable-reference hydration with conversation allowlist, current-state, hash, and range validation.
 
-These APIs expose canonical source material; they do not delegate ownership.
+Snapshot entries contain physical conversation/message IDs, the canonical content hash, index state,
+canonical text length, immutable role, and source timestamp. They do **not** contain message bodies.
+The snapshot includes active and compaction-archived rows but omits ordinary rewind/inactive rows.
+
+Hydration is capped at 256 references per call and runs under one read transaction. Offsets are Python
+character offsets over Hermes' canonical hydration text: strings are unchanged, structured content is
+stable compact JSON with sorted object keys, bytes decode as UTF-8 with replacement, and other scalar
+content uses the same deterministic representation. The content hash remains over the exact SQLite
+storage type + bytes, so storage changes invalidate stale references even when rendered text is equal.
+
+A `SessionDB` file remains the profile boundary. Callers may narrow hydration further with an explicit
+conversation-ID allowlist; Phase 4 will derive that allowlist from the caller's actual search scope.
+The same source APIs work on read-only `SessionDB` handles. No plugin is loaded and no source API writes
+canonical state.
 
 ## Phase 3 — ConversationIndex capability and async consumer
 
