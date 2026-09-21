@@ -3,7 +3,7 @@ title: "Social HAR API Connectivity — Capture social platform login + session 
 sidebar_label: "Social HAR API Connectivity"
 ---
 
-import SkillMeta from '@site/skills/social-media/social-har-api-connectivity/_meta.md';
+import SkillMeta from '@site/optional-skills/social-media/social-har-api-connectivity/_meta.md';
 
 # Social HAR API Connectivity
 
@@ -25,6 +25,6 @@ See the skill's readme for platform-specific guidance.
 
 ## See Also
 
-- [Skill source](pathname:///skills/social-media/social-har-api-connectivity/SKILL.md)
+- [Skill source](pathname:///optional-skills/social-media/social-har-api-connectivity/SKILL.md)
 - [`xurl` skill](../social-media/social-media-xurl.md) — X/Twitter via official API
 - [`linkedin-posting` skill](../social-media/social-media-linkedin-posting.md) — LinkedIn via OAuth

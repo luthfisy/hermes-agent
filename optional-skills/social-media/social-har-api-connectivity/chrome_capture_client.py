@@ -10,6 +10,7 @@ session cookies and API endpoints.
 
 import argparse
 import asyncio
+import copy
 import json
 import os
 import ssl
@@ -20,6 +21,7 @@ try:
 except ImportError:
     websockets = None  # optional dep
 
+
 HAR_TEMPLATE = {
     "log": {
         "version": "1.2",
@@ -29,21 +31,36 @@ HAR_TEMPLATE = {
 }
 
 
-async def capture_har(cdp_url: str, output: str, timeout: int = 120) -> dict:
+async def capture_har(cdp_url: str, output: str, timeout: int = 120,
+                      navigate_url: str | None = None) -> dict:
     """Connect to Chrome DevTools, capture network, write HAR."""
-    har = dict(HAR_TEMPLATE)
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    if websockets is None:
+        raise ImportError("websockets library is required — install with: pip install websockets")
+
+    har = copy.deepcopy(HAR_TEMPLATE)
+
+    # CDP connections via ws:// on localhost need no SSL context
+    ctx = None
+    if cdp_url.startswith("wss://"):
+        ctx = ssl.create_default_context()
 
     async with websockets.connect(cdp_url, ssl=ctx) as ws:
         # Enable network tracking
         await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
         await ws.recv()  # result
 
+        # Navigate if URL provided
+        if navigate_url:
+            await ws.send(json.dumps({
+                "id": 2,
+                "method": "Page.navigate",
+                "params": {"url": navigate_url},
+            }))
+            await ws.recv()  # result
+
         entries = []
 
-        async def listener():
+        async def listen_until_timeout():
             while True:
                 msg = json.loads(await ws.recv())
                 if msg.get("method") == "Network.requestWillBeSent":
@@ -62,8 +79,12 @@ async def capture_har(cdp_url: str, output: str, timeout: int = 120) -> dict:
                             "status": resp.get("status"),
                             "headers": dict(resp.get("headers", {})),
                         }
+            # never returns — cancelled by wait_for
 
-        await asyncio.wait_for(listener(), timeout=timeout)
+        try:
+            await asyncio.wait_for(listen_until_timeout(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass  # expected — timeout means capture window is over
 
     har["log"]["entries"] = entries
     Path(output).write_text(json.dumps(har, indent=2))
@@ -80,4 +101,4 @@ if __name__ == "__main__":
     parser.add_argument("--url", help="URL to navigate to first")
     args = parser.parse_args()
 
-    asyncio.run(capture_har(args.cdp, args.output))
+    asyncio.run(capture_har(args.cdp, args.output, navigate_url=args.url))

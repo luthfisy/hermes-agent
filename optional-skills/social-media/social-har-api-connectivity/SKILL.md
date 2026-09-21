@@ -1,10 +1,15 @@
 ---
 name: social-har-api-connectivity
-description: "Capture social platform login + session for agentic posting (authorized use only)"
+description: "Capture browser sessions to drive social APIs (authorized use only)."
 version: 1.0.0
 author: "Joerg Peetz (@JPeetz) + Hermes Agent"
+license: MIT
+platforms: [macos, linux]
 type: optional
 source: https://github.com/JPeetz/hermes-agent/tree/main/optional-skills/social-media/social-har-api-connectivity
+metadata.hermes:
+  tags: [social, api, chrome, har, session]
+  category: social-media
 requires_toolsets:
   - web
   - browser
