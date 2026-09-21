@@ -317,7 +317,7 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 | 4. Search/reference path | Complete | Derived search cannot bypass core authorization |
 | 5. Rebuild/status | Complete | Lost index rebuilds from canonical state |
 | 6. Canonical-owner acceptance | Complete | Gateway/worker paths produce one canonical row and one derived entry |
-| 7. Semantic compaction proposals | Later/separate | Optional compactor cannot mutate canonical history directly |
+| 7. Semantic compaction proposals | Complete | Optional compactor cannot mutate canonical history directly |
 
 ## Phase 0 — Contract and baseline
 
@@ -536,9 +536,44 @@ than a second transcript writer.
 
 ## Phase 7 — Optional semantic compaction
 
-Implement only after indexing/rebuild is proven.
+**Status: complete.** Semantic compaction is a second independent plugin capability,
+separate from both `MemoryProvider` and `ConversationIndex`. Packages expose it through
+the dedicated `hermes_agent.semantic_compactors` entry-point group, keyed by the same
+configured `memory.provider` package name. A package such as Reliquary can therefore ship
+memory, derived indexing, and semantic compaction as three independent capabilities.
 
-Hermes supplies a stable snapshot/fingerprint. The external service proposes a summary/retained-tail transformation. Hermes validates and commits using its existing compaction authority. Native Hermes compaction remains the fallback.
+The capability runs only after Hermes has acquired the normal compression lease, adopted
+the latest durable parent, and entered the existing summary-dispatch fence. Hermes
+deep-copies that source transcript and computes a stable source fingerprint. The provider
+receives a `SemanticCompactionRequest` containing the physical session/profile identity,
+source fingerprint, source messages, token estimate, optional focus topic, provider memory
+context, and force/manual-compaction flag.
+
+The provider returns a `SemanticCompactionProposal` containing a full replacement
+transcript candidate, the source fingerprint it was derived from, and the index of its
+synthetic summary row. This lets Reliquary choose the semantic summary and retained-tail
+structure rather than merely supplying text to Hermes' native summarizer.
+
+Hermes remains authoritative:
+
+- proposal generation runs under the same cancellation/deadline/attempt fence as native
+  summary generation;
+- Hermes rejects a proposal if the live source changed while it was being produced or if
+  its source fingerprint does not match;
+- provider-supplied persistence/compaction markers are stripped;
+- Hermes alone stamps the declared synthetic summary row with its durable compaction
+  metadata;
+- Hermes runs the existing compaction finalizer, no-progress/anti-growth checks, user-turn
+  preservation, commit fence, and memory extraction;
+- canonical mutation still happens only through the existing `archive_and_compact()` or
+  `publish_compression_child()` paths, including concurrent-tail/watermark handling; and
+- the resulting canonical visibility/handoff changes continue to flow through the
+  transactional conversation-change feed.
+
+If the semantic capability is absent, unavailable, raises, returns `None`, supplies an
+invalid proposal, or races a source change, Hermes immediately falls back to the existing
+native/context-engine compressor. The provider cannot close, rewind, archive, rotate, or
+otherwise mutate the canonical transcript directly.
 
 # Suggested patch sequence
 

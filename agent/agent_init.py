@@ -1316,6 +1316,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None
     agent._conversation_index_provider_name = ""
+    agent._semantic_compactor_provider_name = ""
     agent._conversation_index_hermes_home = str(get_hermes_home())
     agent._conversation_index_profile_name = None
     with suppress(Exception):
@@ -1326,6 +1327,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if _mem_provider_name and _mem_provider_name.strip():
                 agent._conversation_index_provider_name = _mem_provider_name.strip()
+                agent._semantic_compactor_provider_name = _mem_provider_name.strip()
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem

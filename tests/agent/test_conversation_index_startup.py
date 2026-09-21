@@ -55,6 +55,7 @@ def test_configured_memory_package_starts_index_after_canonical_db_exists():
     assert kwargs["db_path"] == db.db_path
     assert kwargs["hermes_home"] == agent._conversation_index_hermes_home
     assert kwargs["profile_name"] == agent._conversation_index_profile_name
+    assert agent._semantic_compactor_provider_name == "recording"
 
     search_callback = provider.init_kwargs["conversation_index_search"]
     with patch(
