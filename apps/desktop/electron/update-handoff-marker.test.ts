@@ -110,5 +110,9 @@ test.skipIf(process.platform === 'win32')('POSIX hand-off preserves the Desktop 
 })
 
 test.skipIf(process.platform !== 'win32')('PowerShell hand-off preserves the Desktop marker acquisition time', () => {
+  // A real PowerShell hand-off needs ~1.5s warm but up to 6.5s+ when the CI
+  // box runs 16 vitest workers at once — the default 5s per-test timeout
+  // misreports contention as failure. The PowerShell-specific assertion body
+  // is in assertScriptHandoff (sync, spawn-based); 60s only bounds the worst case.
   assertScriptHandoff(runWindows)
-})
+}, 60_000)
