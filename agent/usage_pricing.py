@@ -665,7 +665,7 @@ def estimate_usage_cost(
     # route happens to have no time-of-day pricing.
     if billing_time is not None:
         if billing_time.tzinfo is None:
-            raise ValueError("billing_time must be timezone-aware (UTC)")
+            raise ValueError("billing_time must be timezone-aware")
         billing_time = billing_time.astimezone(timezone.utc)
 
     from providers import get_provider_profile
