@@ -12,6 +12,7 @@ import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
+import os
 import re
 import shutil
 import threading
@@ -378,6 +379,29 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     return _err(scan_error)
 
 
+def _run_pre_skill_hook(hook_name: str, **kwargs) -> Optional[Dict[str, Any]]:
+    """Return a normalized block/handled response, or None to continue mutation."""
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+    if not has_hook(hook_name):
+        return None
+    for hook_result in invoke_hook(hook_name, **kwargs):
+        if not isinstance(hook_result, dict):
+            continue
+        action = hook_result.get("action")
+        if action == "block":
+            return _err(hook_result.get("reason", "Skill mutation blocked by plugin"))
+        if action == "handled":
+            return {"success": True, "hook_handled": True}
+    return None
+
+
+def _run_post_skill_hook(hook_name: str, **kwargs) -> None:
+    """Notify observers only after a mutation has succeeded."""
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+    if has_hook(hook_name):
+        invoke_hook(hook_name, **kwargs)
+
+
 def _attach_org_note(result: Dict[str, Any], name: str, skill_dir: Path) -> Dict[str, Any]:
     if org_note := _maybe_auto_propose_org_edit(name, skill_dir):
         result["org_sharing"] = org_note
@@ -420,11 +444,53 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)):
         return _err(err)
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+    skill_dir_override = None
+    guard_results = (invoke_hook("pre_skill_create:guard", name=name, content=content, category=category)
+                     if has_hook("pre_skill_create:guard") else ())
+    for hook_result in guard_results:
+        if not isinstance(hook_result, dict):
+            continue
+        action = hook_result.get("action")
+        if action == "block":
+            return _err(hook_result.get("reason", "Skill creation blocked by plugin"))
+        if action == "redirect":
+            path = hook_result.get("path")
+            if not path:
+                continue
+            skill_dir_override = Path(os.path.expandvars(os.path.expanduser(str(path))))
+            break
+        if action == "handled":
+            return {"success": True, "message": f"Skill '{name}' created by plugin.", "hook_handled": True}
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
-    skill_dir = _resolve_skill_dir(name, category)
-    from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(skill_dir)
+
+    hook_results = (invoke_hook("pre_skill_create", name=name, content=content, category=category)
+                    if has_hook("pre_skill_create") else ())
+    for hook_result in hook_results:
+        if not isinstance(hook_result, dict):
+            continue
+        action = hook_result.get("action")
+        if action == "block":
+            return _err(hook_result.get("reason", "Skill creation blocked by plugin"))
+        if action == "redirect":
+            path = hook_result.get("path")
+            if not path:
+                continue
+            skill_dir_override = Path(os.path.expandvars(os.path.expanduser(str(path))))
+            break
+        if action == "handled":
+            result = {"success": True, "message": f"Skill '{name}' created by plugin.", "hook_handled": True}
+            if has_hook("post_skill_create"):
+                invoke_hook("post_skill_create", name=name, category=category or "", path="", success=True)
+            return result
+
+    skill_dir = skill_dir_override or _resolve_skill_dir(name, category)
+    if skill_dir_override is None:
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(skill_dir)
+    else:
+        skill_dir.mkdir(parents=True, exist_ok=True)
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
@@ -440,6 +506,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
                 f"skill_manage(action='write_file', name='{name}', file_path='references/example.md', "
                 "file_content='...')"}
     _attach_lint_findings(_add_description_prompt_preview(result, content), skill_md)
+    if has_hook("post_skill_create"):
+        invoke_hook("post_skill_create", name=name, category=category or "", path=str(skill_dir), success=True)
     return result
 
 
@@ -447,14 +515,35 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
     if err := _validate_frontmatter(content) or _validate_content_size(content):
         return _err(err)
+    if hook_result := _run_pre_skill_hook(
+            "pre_skill_edit:guard", name=name, content=content):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"Skill '{name}' edited by plugin."
+        return hook_result
     skill_dir, guard = _locate_for_write(name, "edit")
+    if guard:
+        return guard
+    assert skill_dir is not None
+    old_content = None
+    with suppress(OSError):
+        old_content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    if hook_result := _run_pre_skill_hook(
+            "pre_skill_edit", name=name, content=content, old_content=old_content):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"Skill '{name}' edited by plugin."
+        return hook_result
+
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
-    if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
+    if guard := _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
         return guard
     result = {
         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(skill_dir), "_change": {"description": _description_preview(content)}}
-    return _add_description_prompt_preview(_attach_org_note(result, name, skill_dir), content)
+    result = _add_description_prompt_preview(_attach_org_note(result, name, skill_dir), content)
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+    if has_hook("post_skill_edit"):
+        invoke_hook("post_skill_edit", name=name, path=str(skill_dir), success=True)
+    return result
 
 
 def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = None,
@@ -466,9 +555,21 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         return _err(_PATCH_NEEDS_NEW_STRING)
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
     # richer error (file_preview) this layer cannot produce.
+    if hook_result := _run_pre_skill_hook(
+            "pre_skill_patch:guard", name=name, old_string=old_string, new_string=new_string,
+            file_path=file_path, replace_all=replace_all):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"Skill '{name}' patched by plugin."
+        return hook_result
     skill_dir, guard = _locate_for_write(name, "patch")
     if guard:
         return guard
+    if hook_result := _run_pre_skill_hook(
+            "pre_skill_patch", name=name, old_string=old_string, new_string=new_string,
+            file_path=file_path, replace_all=replace_all):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"Skill '{name}' patched by plugin."
+        return hook_result
     target_label = file_path or "SKILL.md"
     if file_path:
         target, err = _resolve_supporting_file(skill_dir, file_path)
@@ -501,15 +602,25 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
-    return _attach_org_note(result, name, skill_dir)
+    result = _attach_org_note(result, name, skill_dir)
+    _run_post_skill_hook("post_skill_patch", name=name, file_path=file_path, success=True)
+    return result
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
     """Delete a skill. ``absorbed_into``: None = undeclared (legacy, accepted); "" = explicit prune;
     "<skill>" = absorbed into that umbrella, which must exist (so the model can't claim one)."""
+    if hook_result := _run_pre_skill_hook("pre_skill_delete:guard", name=name):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"Skill '{name}' deleted by plugin."
+        return hook_result
     skill_dir, guard = _locate_for_write(name, "delete")
     if guard := guard or _curator_consolidation_delete_guard(name, absorbed_into):
         return guard
+    if hook_result := _run_pre_skill_hook("pre_skill_delete", name=name):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"Skill '{name}' deleted by plugin."
+        return hook_result
     if pinned_err := _pinned_guard(name):
         return _err(pinned_err)
     absorbed_target = absorbed_into.strip() if isinstance(absorbed_into, str) else ""
@@ -533,12 +644,16 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
             return _err(f"failed to archive '{name}': {e}")
         if not ok:
             return _err(archive_msg)
-        return {"success": True,
-                "message": f"Skill '{name}' archived ({archive_msg}).{absorbed_note}",
-                "_archived": True}
+        result = {"success": True,
+                  "message": f"Skill '{name}' archived ({archive_msg}).{absorbed_note}",
+                  "_archived": True}
+        _run_post_skill_hook("post_skill_delete", name=name, success=True)
+        return result
     shutil.rmtree(skill_dir)
     _rmdir_if_empty(skill_dir.parent, skills_root)  # empty category dir, never the root
-    return {"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}"}
+    result = {"success": True, "message": f"Skill '{name}' deleted.{absorbed_note}"}
+    _run_post_skill_hook("post_skill_delete", name=name, success=True)
+    return result
 
 
 def _rmdir_if_empty(parent: Path, stop: Path) -> None:
@@ -557,6 +672,16 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
                     f"bytes / 1 MiB). Consider splitting into smaller files.")
     if err := _validate_content_size(file_content, label=file_path):
         return _err(err)
+    if hook_result := _run_pre_skill_hook(
+            "pre_skill_write_file:guard", name=name, file_path=file_path, file_content=file_content):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"File '{file_path}' written to skill '{name}' by plugin."
+        return hook_result
+    if hook_result := _run_pre_skill_hook(
+            "pre_skill_write_file", name=name, file_path=file_path, file_content=file_content):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"File '{file_path}' written to skill '{name}' by plugin."
+        return hook_result
     skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
     if guard:
         return guard
@@ -569,6 +694,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     # that crosses the line so the review fork sees it in the same turn.
     if file_path.startswith("references/") and (skill_dir / "SKILL.md").exists():
         _attach_lint_findings(result, skill_dir / "SKILL.md")
+    _run_post_skill_hook("post_skill_write_file", name=name, file_path=file_path, success=True)
     return result
 
 
@@ -576,6 +702,14 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
     if err := _validate_file_path(file_path):
         return _err(err)
+    if hook_result := _run_pre_skill_hook("pre_skill_remove_file:guard", name=name, file_path=file_path):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"File '{file_path}' removed from skill '{name}' by plugin."
+        return hook_result
+    if hook_result := _run_pre_skill_hook("pre_skill_remove_file", name=name, file_path=file_path):
+        if hook_result.get("hook_handled"):
+            hook_result["message"] = f"File '{file_path}' removed from skill '{name}' by plugin."
+        return hook_result
     skill_dir, guard = _locate_for_write(name, "remove_file", org_guard=False)
     if guard:
         return guard
@@ -590,7 +724,9 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return read_guard
     target.unlink()
     _rmdir_if_empty(target.parent, skill_dir)
-    return {"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}
+    result = {"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}
+    _run_post_skill_hook("post_skill_remove_file", name=name, file_path=file_path, success=True)
+    return result
 
 
 # --- Main entry point ---------------------------------------------------------
