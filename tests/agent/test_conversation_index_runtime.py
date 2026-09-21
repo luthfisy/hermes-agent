@@ -15,8 +15,8 @@ class FakeIndex(ConversationIndex):
     def search(self, query, *, conversation_ids, limit):
         return ()
 
-    def reset_for_rebuild(self, *, snapshot_watermark):
-        return None
+    def rebuild_from_snapshot(self, snapshot):
+        return snapshot.watermark
 
 
 def test_profile_lock_is_cross_instance_exclusive(tmp_path):

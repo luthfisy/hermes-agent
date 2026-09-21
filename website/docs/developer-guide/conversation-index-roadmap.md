@@ -153,7 +153,8 @@ class ConversationIndex(ABC):
         limit: int,
     ) -> Sequence[MessageReference]: ...
 
-    def reset_for_rebuild(self, *, snapshot_watermark: int) -> None: ...
+    def rebuild_from_snapshot(self, snapshot: ConversationSnapshot) -> int:
+        """Atomically install snapshot state and return its exact committed watermark."""
 ```
 
 The selected memory plugin may provide a `ConversationIndex` capability, but the interfaces remain separate: turn-time memory behaviour and transcript-derived indexing are different responsibilities.
@@ -314,7 +315,7 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 | 2. Source + hydration API | Complete | Stable refs can be safely hydrated |
 | 3. Async index capability | Complete | Plugin outage never blocks chat |
 | 4. Search/reference path | Complete | Derived search cannot bypass core authorization |
-| 5. Rebuild/status | Planned | Lost index rebuilds from canonical state |
+| 5. Rebuild/status | Complete | Lost index rebuilds from canonical state |
 | 6. Canonical-owner acceptance | Planned | Gateway/worker paths produce one canonical row and one derived entry |
 | 7. Semantic compaction proposals | Later/separate | Optional compactor cannot mutate canonical history directly |
 
@@ -474,19 +475,30 @@ Coverage includes:
 
 ## Phase 5 — Rebuild, lag, and operator status
 
-Add status/rebuild surfaces only after the underlying contract works.
+**Status: complete.** Retention gaps, impossible cursors (ahead of canonical high-water),
+and provider-raised `ConversationIndexRebuildRequired` now converge on one canonical
+rebuild path. Hermes captures a body-free `ConversationSnapshot`, passes it to
+`ConversationIndex.rebuild_from_snapshot()`, and advances the durable Hermes-owned
+cursor only when the provider returns the exact snapshot watermark it atomically
+installed. A failed rebuild leaves `rebuild_required` sticky and retries rebuild rather
+than resuming incremental replay.
 
-Status should report at least:
+Providers hydrate snapshot entries through the existing bounded canonical source facade.
+If a canonical message changes while a provider is rebuilding, stale snapshot references
+fail hash validation and the post-watermark change feed supplies the newer state. Changes
+committed after the snapshot watermark remain visible as lag and are replayed normally
+after rebuild completion.
 
-- configured index;
-- available/unavailable;
-- feed floor/high-water;
-- plugin cursor;
-- lag;
-- rebuild-required state; and
-- last error/recovery time without leaking user content.
+The operator-safe runtime status now reports configured/available state, feed floor and
+high-water, durable cursor, lag, rebuild-required state, retry/failure state, last error
+class/time, and last recovery time. Status contains no transcript content. Bootstrap and
+unavailable states use the same status contract, while a provider that has not been
+started still reports no runtime status.
 
-Rebuild must use the snapshot-manifest protocol above.
+The rebuild provider contract is explicit: `rebuild_from_snapshot(snapshot)` must build
+and atomically install the derived generation before returning, and it must return the
+snapshot's exact watermark. Hermes never treats a reset/preparation acknowledgement as a
+successful rebuild.
 
 ## Phase 6 — Canonical-owner acceptance
 

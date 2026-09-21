@@ -6,7 +6,7 @@ from agent.conversation_index_consumer import (
     ConversationIndexConsumer,
     ConversationIndexCursorStore,
 )
-from conversation_index import ConversationFeedGapError, ConversationIndex
+from conversation_index import ConversationIndex
 from hermes_state import SessionDB
 
 
@@ -32,8 +32,8 @@ class FakeIndex(ConversationIndex):
     def search(self, query, *, conversation_ids, limit):
         return ()
 
-    def reset_for_rebuild(self, *, snapshot_watermark):
-        return None
+    def rebuild_from_snapshot(self, snapshot):
+        return snapshot.watermark
 
 
 @pytest.fixture()
@@ -85,16 +85,16 @@ def test_failure_keeps_cursor_and_replays_same_batch(db, tmp_path):
     assert consumer.status().state in {"idle", "running"}
 
 
-def test_feed_gap_marks_rebuild_required_without_advancing(db, tmp_path):
+def test_feed_gap_rebuilds_and_advances_to_snapshot_watermark(db, tmp_path):
     db.append_message("alpha", role="user", content="one")
     db.append_message("alpha", role="assistant", content="two")
     db._conn.execute("DELETE FROM conversation_changes WHERE sequence = 1")
     db._conn.commit()
     consumer, _, store = _consumer(db, tmp_path)
 
-    assert consumer.run_once() == 0
-    assert store.load() == 0
-    assert consumer.status().state == "rebuild_required"
+    assert consumer.run_once() == 2
+    assert store.load() == 2
+    assert consumer.status().state == "idle"
 
 
 def test_index_receives_read_only_source_facade(db, tmp_path):

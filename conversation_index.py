@@ -12,7 +12,11 @@ import math
 from dataclasses import dataclass, field
 from enum import Enum
 
-from conversation_index_provider import ConversationIndex, ConversationIndexSource
+from conversation_index_provider import (
+    ConversationIndex,
+    ConversationIndexRebuildRequired,
+    ConversationIndexSource,
+)
 from typing import Any, Mapping, Optional, Tuple
 
 

@@ -27,8 +27,8 @@ class SearchIndex(ConversationIndex):
             raise RuntimeError("search failed")
         return () if self.ref is None else (self.ref,)
 
-    def reset_for_rebuild(self, *, snapshot_watermark):
-        return None
+    def rebuild_from_snapshot(self, snapshot):
+        return snapshot.watermark
 
     def shutdown(self):
         self.closed = True

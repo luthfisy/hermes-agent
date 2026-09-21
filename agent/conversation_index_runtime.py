@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -39,7 +40,12 @@ def _open_consumer(
 
 def _status(provider_name: str, state: str, *, error: Optional[str] = None):
     return ConversationIndexConsumerStatus(
-        index_name=provider_name, state=state, last_error=error,
+        index_name=provider_name,
+        state=state,
+        configured=True,
+        available=False if state == "unavailable" else None,
+        last_error=error,
+        last_error_at=time.time() if error else None,
     )
 
 

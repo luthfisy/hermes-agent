@@ -26,6 +26,10 @@ class ConversationIndexSource(Protocol):
     ) -> Tuple[str, ...]: ...
 
 
+class ConversationIndexRebuildRequired(RuntimeError):
+    """Provider-owned derived state cannot continue incrementally and needs a canonical rebuild."""
+
+
 class ConversationIndex(ABC):
     """Optional derived transcript index. Hermes remains canonical."""
 
@@ -51,8 +55,8 @@ class ConversationIndex(ABC):
         """Return body-free references. Core authorizes and hydrates them."""
 
     @abstractmethod
-    def reset_for_rebuild(self, *, snapshot_watermark: int) -> None:
-        """Reset provider-owned derived state before a canonical rebuild."""
+    def rebuild_from_snapshot(self, snapshot: "ConversationSnapshot") -> int:
+        """Atomically install a canonical snapshot and return its exact committed watermark."""
 
     def shutdown(self) -> None:
         """Release provider resources. Consumer failures must not affect canonical state."""

@@ -4,25 +4,14 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
-from agent.conversation_index_storage import (
-    ConversationIndexCursorStore,
-    ConversationIndexSourceFacade,
-)
-from conversation_index import ConversationFeedGapError, ConversationIndex
-
-
-@dataclass(frozen=True)
-class ConversationIndexConsumerStatus:
-    index_name: str
-    state: str = "starting"
-    cursor: int = 0
-    failures: int = 0
-    last_error: Optional[str] = None
-    next_retry_at: Optional[float] = None
+from agent.conversation_index_rebuild import rebuild_conversation_index
+from agent.conversation_index_status import ConversationIndexConsumerStatus, ConversationIndexStatusTracker
+from agent.conversation_index_storage import ConversationIndexCursorStore, ConversationIndexSourceFacade
+from conversation_index import ConversationFeedGapError
+from conversation_index_provider import ConversationIndex, ConversationIndexRebuildRequired
 
 
 class ConversationIndexConsumer:
@@ -55,23 +44,27 @@ class ConversationIndexConsumer:
         self._db = None
         self._source = None
         self._initialized = False
-        self._lock = threading.Lock()
-        self._status = ConversationIndexConsumerStatus(
-            index_name=index_name, cursor=cursor_store.load(),
+        self._status_tracker = ConversationIndexStatusTracker(
+            index_name,
+            cursor_store.load(),
+            base_backoff=self.base_backoff,
+            max_backoff=self.max_backoff,
         )
 
     def status(self) -> ConversationIndexConsumerStatus:
-        with self._lock:
-            return self._status
-
-    def _set_status(self, **changes) -> None:
-        with self._lock:
-            self._status = replace(self._status, **changes)
+        return self._status_tracker.snapshot()
 
     def _ensure_initialized(self) -> bool:
-        if not self.index.is_available():
-            self._record_unavailable()
+        try:
+            available = bool(self.index.is_available())
+        except Exception as exc:
+            self._status_tracker.record_failure(exc, state="unavailable", available=False)
             return False
+        if not available:
+            self._status_tracker.mark_unavailable()
+            return False
+
+        self._status_tracker.update(available=True)
         if self._db is None:
             from hermes_state import SessionDB
 
@@ -85,49 +78,63 @@ class ConversationIndexConsumer:
                     hermes_home=str(self.hermes_home),
                 )
             except Exception as exc:
-                self._record_failure(exc, state="unavailable")
+                self._status_tracker.record_failure(exc, state="unavailable", available=False)
                 return False
             self._initialized = True
         return True
 
-    def _retry_delay(self, failures: int) -> float:
-        return min(self.max_backoff, self.base_backoff * (2 ** min(failures - 1, 16)))
-
-    def _record_unavailable(self) -> None:
-        failures = self.status().failures + 1
-        self._set_status(
-            state="unavailable", failures=failures, last_error=None,
-            next_retry_at=time.time() + self._retry_delay(failures),
-        )
-
-    def _record_failure(self, exc: Exception, *, state: str = "error") -> None:
-        failures = self.status().failures + 1
-        self._set_status(
-            state=state,
-            failures=failures,
-            last_error=type(exc).__name__,
-            next_retry_at=time.time() + self._retry_delay(failures),
-        )
+    def _rebuild(self) -> int:
+        cursor = self.status().cursor
+        try:
+            bounds = self._db.get_conversation_change_bounds()
+            self._status_tracker.set_bounds(
+                bounds,
+                state="rebuilding",
+                available=True,
+                rebuild_required=True,
+                next_retry_at=None,
+            )
+            committed = rebuild_conversation_index(self.index, self._db, self.cursor_store)
+            latest_bounds = self._db.get_conversation_change_bounds()
+            self._status_tracker.record_success(committed, latest_bounds, recovered=True)
+            return committed
+        except Exception as exc:
+            self._status_tracker.record_failure(
+                exc,
+                state="rebuild_required",
+                available=True,
+                rebuild_required=True,
+            )
+            return cursor
 
     def run_once(self) -> int:
         cursor = self.status().cursor
         try:
             if not self._ensure_initialized():
                 return cursor
+
             bounds = self._db.get_conversation_change_bounds()
-            if cursor < bounds.floor_sequence - 1:
-                raise ConversationFeedGapError(cursor, bounds.floor_sequence, bounds.high_water_sequence)
+            self._status_tracker.set_bounds(bounds, available=True)
+
+            if self.status().rebuild_required:
+                return self._rebuild()
+            if cursor < bounds.floor_sequence - 1 or cursor > bounds.high_water_sequence:
+                return self._rebuild()
+
             changes = self._db.get_conversation_changes(
-                after_sequence=cursor, limit=self.batch_size,
+                after_sequence=cursor,
+                limit=self.batch_size,
             )
             if not changes:
-                self._set_status(
-                    state="idle", failures=0, last_error=None, next_retry_at=None, cursor=cursor,
-                )
+                self._status_tracker.record_success(cursor, bounds)
                 return cursor
 
-            self._set_status(state="running", next_retry_at=None)
-            applied = self.index.consume_changes(changes, after_cursor=cursor)
+            self._status_tracker.update(state="running", next_retry_at=None)
+            try:
+                applied = self.index.consume_changes(changes, after_cursor=cursor)
+            except ConversationIndexRebuildRequired:
+                return self._rebuild()
+
             delivered = {change.sequence for change in changes}
             if (
                 isinstance(applied, bool)
@@ -136,21 +143,15 @@ class ConversationIndexConsumer:
                 or applied not in delivered
             ):
                 raise ValueError("index returned an invalid committed cursor")
+
             self.cursor_store.save(applied)
-            self._set_status(
-                state="idle", cursor=applied, failures=0, last_error=None, next_retry_at=None,
-            )
+            latest_bounds = self._db.get_conversation_change_bounds()
+            self._status_tracker.record_success(applied, latest_bounds)
             return applied
         except ConversationFeedGapError:
-            self._set_status(
-                state="rebuild_required",
-                cursor=cursor,
-                last_error="ConversationFeedGapError",
-                next_retry_at=None,
-            )
-            return cursor
+            return self._rebuild()
         except Exception as exc:
-            self._record_failure(exc)
+            self._status_tracker.record_failure(exc)
             return cursor
 
     def run(self, stop_event: threading.Event) -> None:
@@ -160,7 +161,8 @@ class ConversationIndexConsumer:
                 self.run_once()
                 current = self.status()
                 if current.state == "rebuild_required":
-                    stop_event.wait(self.max_backoff)
+                    delay = max(0.0, (current.next_retry_at or time.time()) - time.time())
+                    stop_event.wait(delay or self.max_backoff)
                 elif current.failures > before.failures or current.state in {"error", "unavailable"}:
                     delay = max(0.0, (current.next_retry_at or time.time()) - time.time())
                     stop_event.wait(delay)

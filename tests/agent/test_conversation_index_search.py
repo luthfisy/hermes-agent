@@ -27,8 +27,8 @@ class FakeIndex(ConversationIndex):
         self.calls.append((query, conversation_ids, limit))
         return self.references
 
-    def reset_for_rebuild(self, *, snapshot_watermark):
-        return None
+    def rebuild_from_snapshot(self, snapshot):
+        return snapshot.watermark
 
     def shutdown(self):
         self.closed = True

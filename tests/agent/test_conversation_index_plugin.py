@@ -14,8 +14,8 @@ class FakeIndex(ConversationIndex):
     def search(self, query, *, conversation_ids, limit):
         return ()
 
-    def reset_for_rebuild(self, *, snapshot_watermark):
-        return None
+    def rebuild_from_snapshot(self, snapshot):
+        return snapshot.watermark
 
 
 class FakeEntryPoint:
