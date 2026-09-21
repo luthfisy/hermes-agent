@@ -649,6 +649,10 @@ def estimate_usage_cost(
 ) -> CostResult:
     """Estimate the USD cost of a usage record for a model+route.
 
+    A provider profile that reports its own cost wins: when
+    ``profile.get_usage_cost()`` returns a result it is returned directly
+    and the rate cards below are not consulted.
+
     ``billing_time`` prices a historical moment instead of the call time —
     used by insights re-estimation of past sessions so DeepSeek's
     peak/off-peak rate is selected by when the tokens were consumed. It
