@@ -391,7 +391,6 @@ test('resolvePersistedRemoteToken keeps the existing token when no new token is 
   assert.equal(called, false, 'an empty incoming token must not re-encrypt anything')
 })
 
-<<<<<<< HEAD
 test('resolveRemoteTokenPlainText stays silent in the keychain-opt-out default', () => {
   // #117269: with encryption opted out (the default), plain text is the CHOSEN
   // mode and probeSecureTokenStorage reports availability on purpose — every
