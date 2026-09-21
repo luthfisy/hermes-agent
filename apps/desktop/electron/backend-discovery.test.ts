@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { attachToHostBackend } from './host-backend-attach'
+import { attachOrReserveSpawn, attachToHostBackend } from './host-backend-attach'
+import { claimHostSpawnGate } from './host-spawn-gate'
 import { runPrimaryBackendStartup } from './primary-backend-startup'
 
 const LEDGER = JSON.stringify([
@@ -39,8 +43,7 @@ test('a running backend record makes startup attach and spawn zero processes', a
 
   const setup = await runPrimaryBackendStartup({
     assertCurrentAttempt: () => {},
-    attachHostBackend: () =>
-      attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, attachDeps(LEDGER)),
+    attachHostBackend: () => attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, attachDeps(LEDGER)),
     connectRemote: async () => ({ mode: 'remote' }),
     ensureLocalRuntime: async backend => backend,
     prepareLocalBackend: () => {
@@ -95,4 +98,70 @@ test('a record whose backend rejects the session token does not attach', async (
   )
 
   assert.equal(attached, null)
+})
+
+/** A process that loses the atomic gate race waits for the winner's backend. */
+test('a lost spawn-gate race attaches instead of spawning a second backend', async () => {
+  let ledger: string | null = null
+  let takeAttempts = 0
+
+  const outcome = await attachOrReserveSpawn(
+    { isolated: false, ledgerPath: '/ledger.json' },
+    { ...attachDeps(null), readLedger: () => ledger },
+    {
+      now: () => 0,
+      read: () => null,
+      take: () => {
+        takeAttempts += 1
+
+        return null
+      },
+      sleep: async () => {
+        ledger = LEDGER
+      }
+    },
+    { pollMs: 0, waitBudgetMs: 1 }
+  )
+
+  assert.equal(takeAttempts, 1)
+  assert.equal('attached' in outcome, true)
+})
+
+/** Gate creation is exclusive and an old release cannot remove a replacement. */
+test('only one process owns the spawn gate file', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-spawn-gate-'))
+  const gatePath = path.join(directory, 'gate.json')
+
+  try {
+    const releaseFirst = claimHostSpawnGate(gatePath, {
+      claim: 'first',
+      pid: 1,
+      startedAt: 1
+    })
+
+    const releaseLoser = claimHostSpawnGate(gatePath, {
+      claim: 'loser',
+      pid: 2,
+      startedAt: 2
+    })
+
+    assert.equal(typeof releaseFirst, 'function')
+    assert.equal(releaseLoser, null)
+
+    fs.unlinkSync(gatePath)
+
+    const releaseReplacement = claimHostSpawnGate(gatePath, {
+      claim: 'replacement',
+      pid: 3,
+      startedAt: 3
+    })
+
+    releaseFirst?.()
+
+    assert.equal(typeof releaseReplacement, 'function')
+    assert.equal(fs.existsSync(gatePath), true)
+    releaseReplacement?.()
+  } finally {
+    fs.rmSync(directory, { force: true, recursive: true })
+  }
 })
