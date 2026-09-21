@@ -24,7 +24,7 @@ from agent.message_sanitization import (
     _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
     _sanitize_tools_non_ascii, _strip_images_from_messages, _strip_non_ascii,
-    close_interrupted_tool_sequence,
+    mark_interrupted_tool_tail,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.turn_failure_copy import (
@@ -1214,10 +1214,10 @@ def abort_turn_on_interrupt(
     agent: Any, messages: List[Dict[str, Any]], conversation_history: Any, api_call_count: int, *,
     abort_message: str, interrupt_text: str,
 ) -> Dict[str, Any]:
-    """Announce ``abort_message``, close any open tool sequence with ``interrupt_text``,
+    """Announce ``abort_message``, mark an open tool sequence with interruption provenance,
     persist, clear the interrupt and return the ``interrupted`` result dict."""
     _vlines(agent, f"⚡ {abort_message}")
-    close_interrupted_tool_sequence(messages, interrupt_text)
+    mark_interrupted_tool_tail(messages)
     agent._persist_session(messages, conversation_history)
     # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
     # tool iteration, which will no longer happen — drop it (hard-cancel semantics).
