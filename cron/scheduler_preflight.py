@@ -85,11 +85,17 @@ def _cron_preflight_enabled(cfg: dict) -> bool:
 
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key? Mirrors run_job's
-    requested-provider computation. Skipped when a fallback chain exists — auth-fallback may
-    legitimately rescue a missing primary key, so blocking here would break that contract."""
+    requested-provider computation. Skipped when an active fallback chain exists — auth-fallback
+    may legitimately rescue a missing primary key, so blocking here would break that contract.
+    A chain disabled by ``fallback_policy.halt`` cannot rescue the primary and is treated as empty.
+    """
     try:
         if _sched.get_fallback_chain(cfg):
-            return None
+            from hermes_cli.fallback_config import fallback_halt_active
+
+            halt_active, _ = fallback_halt_active()
+            if not halt_active:
+                return None
     except Exception:
         return None  # fail-open: never block on a preflight-internal error
 

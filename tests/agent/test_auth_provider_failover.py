@@ -81,7 +81,7 @@ class TestAuthFailoverActivation:
         return (
             classified.is_auth
             and not retry.auth_failover_attempted
-            and agent._fallback_index < len(agent._fallback_chain)
+            and agent._has_pending_fallback()
         )
 
     def test_auth_failover_fires_when_chain_present(self):
