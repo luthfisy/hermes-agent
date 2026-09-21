@@ -231,6 +231,11 @@ export const en: Translations = {
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",
+    statTotal: "Total",
+    statActiveInStore: "Active in store",
+    statArchived: "Archived",
+    statMessages: "Messages",
+    statSources: "Sources",
     sources: {
       api_server: "API server",
       acp: "ACP",

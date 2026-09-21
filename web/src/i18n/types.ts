@@ -275,6 +275,11 @@ export interface Translations {
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
+    statTotal: string;
+    statActiveInStore: string;
+    statArchived: string;
+    statMessages: string;
+    statSources: string;
     previousPage: string;
     nextPage: string;
     roles: {
