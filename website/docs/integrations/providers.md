@@ -1390,7 +1390,7 @@ OPENCODE_ZEN_PERSONAL_API_KEY=...
 - The entry you name always wins. Credentials, session restore, and auxiliary calls resolve the scope you asked for — never "the first entry with that URL" (that ambiguity is the bug fixed in #118285).
 - Scope names are free-form: the dict key is the identity and `name` is only the picker label. Per-model wire selection follows the model and its endpoint family, not the scope's name — a scope on `https://opencode.ai/zen/v1` routes a codex-wire model to `codex_responses` and a chat model to chat completions whether it is called `opencode-zen-work` or anything else.
 - A `providers:` entry named exactly after a built-in provider is ignored — the built-in wins.
-- A session row restored without a surviving `base_url` cannot be told apart when N scopes share one URL; the first configured entry answers. New rows store the scope, so this only affects pre-existing rows.
+- A session row stores the scope it ran on, so a resume (CLI, TUI or Desktop) rebuilds on that scope's key. A row written **before** scopes were stored carries no scope at all — with N scopes on one URL and no surviving `base_url` to disambiguate, the first configured entry answers.
 - Profile secret aliasing: a variable shaped `<BASE>_<PROFILE>_API_KEY` can hydrate `<BASE>_API_KEY` when it is credential-shaped and a profile of that name exists (`secrets.profile_alias: false` disables it). Harmless for names like `OPENCODE_ZEN_WORK_API_KEY`, but keep it in mind when naming scopes after profiles.
 
 #### Command-minted credentials (`key_cmd`)

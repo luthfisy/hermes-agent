@@ -1004,4 +1004,53 @@ class TestTwoScopesOnOneEndpoint:
         assert kwargs["provider"] == "custom"
         assert kwargs["api_key"] == PERSONAL_SCOPE_KEY
 
+    def test_round_trip_persists_and_restores_the_scope_in_use(self, monkeypatch):
+        """The REAL persist → row → restore round trip, on the scope the session actually ran on.
+
+        The live agent carries the billing class ``provider="custom"`` plus the identity it was built
+        on (``requested_provider``); persisting only the endpoint healed the row to the FIRST entry on
+        that URL, so resuming the ``personal`` chat resolved ``work``'s key (#118285). The sibling test
+        hands the override in already healed, so it skips exactly the step that was broken.
+        """
+        self._env(monkeypatch)
+        live = _make_agent_with_override(
+            {
+                "model": "kimi-k2.6",
+                "provider": "custom:opencode-zen-personal",
+                "base_url": SCOPE_URL,
+                "api_mode": "chat_completions",
+            },
+            monkeypatch,
+            TWO_SCOPES_CONFIG,
+        )
+        assert live["provider"] == "custom"  # the billing class, not an identity
+        assert live["requested_provider"] == "custom:opencode-zen-personal"
+        assert live["api_key"] == PERSONAL_SCOPE_KEY
+
+        from tui_gateway.server import (
+            _runtime_model_config,
+            _stored_session_runtime_overrides,
+        )
+
+        agent = types.SimpleNamespace(
+            model=live["model"],
+            provider=live["provider"],
+            base_url=live["base_url"],
+            api_mode=live["api_mode"],
+            requested_provider=live["requested_provider"],
+            reasoning_config=None,
+            service_tier=None,
+        )
+        model_config = _runtime_model_config(agent)
+        assert model_config["provider"] == "custom:opencode-zen-personal"
+
+        row = {"model": "kimi-k2.6", "model_config": json.dumps(model_config)}
+        overrides = _stored_session_runtime_overrides(row)
+
+        resumed = _make_agent_with_override(overrides["model_override"], monkeypatch, TWO_SCOPES_CONFIG)
+
+        assert resumed["provider"] == "custom"
+        assert resumed["base_url"].rstrip("/") == SCOPE_URL.rstrip("/")
+        assert resumed["api_key"] == PERSONAL_SCOPE_KEY
+
 

@@ -129,3 +129,29 @@ def test_picker_lists_one_row_per_scope(scoped_home):
     assert {"opencode-zen-work", "opencode-zen-personal"} <= set(rows)
     assert rows["opencode-zen-personal"]["is_current"] is True
     assert rows["opencode-zen-work"]["is_current"] is False
+
+
+def test_cli_resume_heals_a_bare_row_to_the_scope_the_row_names(scoped_home):
+    """The CLI restore path must not fall back to the first entry on the URL either.
+
+    ``stored_session_route`` reads the row through ``session_gateway_runtime``, which prefers the
+    nested ``gateway_runtime`` shape; that shape can hold the bare billing class ``custom`` while the
+    row's top-level key still names the scope. Healing from the endpoint alone sent the resume to
+    ``opencode-zen-work`` — the wrong scope's key (#118285).
+    """
+    import json
+
+    from hermes_cli.cli_model_switch_mixin import stored_session_route
+
+    row = {
+        "model": "kimi-k2.6",
+        "model_config": json.dumps({
+            "gateway_runtime": {"provider": "custom", "base_url": URL, "api_mode": "chat_completions"},
+            "provider": "custom:opencode-zen-personal",
+            "base_url": URL,
+        }),
+    }
+
+    route = stored_session_route(row, current_model="other-model", current_provider="other-provider")
+
+    assert route[1] == "custom:opencode-zen-personal"
