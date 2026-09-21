@@ -96,9 +96,9 @@ export const $modelVisibilityOpen = atom(false)
  *  Kept local-first: localStorage stays the instant read so the picker never
  *  waits on a round-trip, and a disconnected gateway is not an error — the next
  *  edit and the next connect both retry. */
-function pushVisibleModels(keys: null | Set<string>): void {
+function pushVisibleModels(keys: Set<string>): void {
   void activeGateway()
-    ?.request('config.set', { key: 'visible_models', value: keys === null ? null : [...keys] })
+    ?.request('config.set', { key: 'visible_models', value: [...keys] })
     .catch(() => {
       // Not connected, or a gateway too old to know the key.
     })
@@ -126,6 +126,10 @@ export function setVisibleModels(keys: Set<string>): void {
 }
 
 if (typeof window !== 'undefined') {
+  // Multi-client convergence ordering: backend non-null wins over local cache on connect,
+  // while an unseeded backend (null) adopts the first connected renderer's local cache.
+  // Subsequent edits broadcast via config.set with last-writer-wins semantics so all
+  // active surfaces converge on the most recent configuration.
   $gateway.listen(() => {
     const gateway = activeGateway()
 
