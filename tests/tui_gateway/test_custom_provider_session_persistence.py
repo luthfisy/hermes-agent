@@ -958,3 +958,50 @@ class TestRuntimeModelConfigDropsStaleKeys:
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
 
 
+# --- Two scopes of ONE endpoint (GH #118285) --------------------------------
+#
+# A "scope" is a named ``providers:`` entry reusing a provider's endpoint under its
+# own ``key_env``. When the URL reverse lookup chose the identity, both scopes shared
+# one base_url and the first entry won — so a session resumed on the second scope
+# rebuilt the agent on the FIRST scope's credential.
+
+SCOPE_URL = "https://opencode.ai/zen/v1"
+WORK_SCOPE_KEY = "sk-work-scope"
+PERSONAL_SCOPE_KEY = "sk-personal-scope"
+
+TWO_SCOPES_CONFIG = {
+    "providers": {
+        "opencode-zen-work": {
+            "name": "OpenCode Zen (work)",
+            "api": SCOPE_URL,
+            "key_env": "OPENCODE_ZEN_WORK_API_KEY",
+        },
+        "opencode-zen-personal": {
+            "name": "OpenCode Zen (personal)",
+            "api": SCOPE_URL,
+            "key_env": "OPENCODE_ZEN_PERSONAL_API_KEY",
+        },
+    }
+}
+
+
+class TestTwoScopesOnOneEndpoint:
+    def _env(self, monkeypatch):
+        monkeypatch.setenv("OPENCODE_ZEN_WORK_API_KEY", WORK_SCOPE_KEY)
+        monkeypatch.setenv("OPENCODE_ZEN_PERSONAL_API_KEY", PERSONAL_SCOPE_KEY)
+
+    def test_resume_rebuilds_on_the_scope_that_was_persisted(self, monkeypatch):
+        self._env(monkeypatch)
+        override = {
+            "model": "kimi-k2.6",
+            "provider": "custom:opencode-zen-personal",
+            "base_url": SCOPE_URL,
+            "api_mode": "chat_completions",
+        }
+
+        kwargs = _make_agent_with_override(override, monkeypatch, TWO_SCOPES_CONFIG)
+
+        assert kwargs["provider"] == "custom"
+        assert kwargs["api_key"] == PERSONAL_SCOPE_KEY
+
+
