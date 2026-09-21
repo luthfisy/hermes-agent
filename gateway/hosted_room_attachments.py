@@ -45,7 +45,18 @@ UNCOMMITTED_TTL_SECONDS = 60 * 60
 DISBANDED_GRACE_SECONDS = 15 * 60
 CLASSIC_ATTACHMENT_TTL_SECONDS = 7 * 24 * 60 * 60
 
+DEFAULT_ATTACHMENT_LIST_LIMIT = 8
+MAX_ATTACHMENT_LIST_LIMIT = 32
+MAX_ATTACHMENT_LIST_QUERY_CHARS = 255
+ATTACHMENT_LIST_EVENT_SCAN_LIMIT = 256
+MAX_ATTACHMENT_LIST_CURSOR_BYTES = 4 * 1024
+MAX_ATTACHMENT_LIST_RESPONSE_BYTES = 128 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CURSOR_RESET_MESSAGE = "attachment list cursor is invalid; return to Latest"
+_CURSOR_FIELDS = frozenset({
+    "authority_epoch", "authority_gateway_id", "last_attachment_id", "last_manifest_index", "last_seq",
+    "producer_member_id", "recipient_member_id", "query_digest", "room_id", "snapshot_seq", "version",
+})
 
 MAX_ATTACHMENT_NAME_CHARS = 255
 MAX_ATTACHMENT_MIME_CHARS = 127
@@ -468,6 +479,7 @@ class HostedRoomAttachmentStore:
             raise
         return descriptor
 
+
     def _read_blob(self, *, blob_id: str, size: int, sha256: str) -> bytes:
         descriptor = self._open_blob(blob_id=blob_id, size=size)
         try:
@@ -478,6 +490,7 @@ class HostedRoomAttachmentStore:
         if len(data) != size or hashlib.sha256(data).hexdigest() != sha256:
             raise AttachmentIntegrityError("canonical attachment blob failed SHA-256 validation")
         return data
+
 
     def _read_blob_range(self, *, blob_id: str, size: int, offset: int, length: int) -> bytes:
         """One slice of the blob; the row's SHA-256 is the caller's whole-file digest and the
@@ -909,6 +922,7 @@ class HostedRoomAttachmentStore:
             )
             return self._metadata(row)
 
+
     def read_range(
         self,
         *,
@@ -938,6 +952,7 @@ class HostedRoomAttachmentStore:
             data = self._read_blob_range(
                 blob_id=str(row["blob_id"]), size=int(row["size"]), offset=offset, length=length)
             return AttachmentData(self._metadata(row), data)
+
 
     def reconcile_room_events(self) -> int:
         """Recover only attachment commitments named by the durable event payload."""
@@ -1115,6 +1130,18 @@ class HostedRoomAttachmentStore:
         }
 
 
+    @contextmanager
+    def _viewer_snapshot(self) -> Iterator[sqlite3.Connection]:
+        from gateway.hosted_rooms import HostedRoomError
+        from gateway.hosted_room_viewer_state import viewer_snapshot
+
+        try:
+            with viewer_snapshot(self.db_path) as conn:
+                yield conn
+        except HostedRoomError as exc:
+            raise AttachmentNotFoundError(str(exc)) from exc
+
+
     def read_viewer(
         self,
         *,
@@ -1149,8 +1176,7 @@ class HostedRoomAttachmentStore:
             "normalized_event": normalized_event,
             "viewer": True,
         }
-        with self._transaction() as conn:
-            conn.execute("BEGIN")
+        with self._viewer_snapshot() as conn:
             self._require_viewer_room(conn, **scope)
             row = self._read_committed_row(conn, **selection, now=float(self.clock()))
 
@@ -1158,8 +1184,7 @@ class HostedRoomAttachmentStore:
         data = self._read_blob(
             blob_id=str(row["blob_id"]), size=int(row["size"]), sha256=str(row["sha256"]),
         )
-        with self._transaction() as conn:
-            conn.execute("BEGIN")
+        with self._viewer_snapshot() as conn:
             self._require_viewer_room(conn, **scope)
             current = self._read_committed_row(conn, **selection, now=float(self.clock()))
             if current["blob_id"] != row["blob_id"] or self._metadata(current) != self._metadata(row):
@@ -1175,28 +1200,16 @@ class HostedRoomAttachmentStore:
         authority_gateway_id: str,
         authority_epoch: int,
     ) -> None:
-        from gateway.hosted_rooms_common import table_exists as _table_exists
+        from gateway.hosted_rooms import HostedRoomError
+        from gateway.hosted_room_viewer_state import viewer_room_state
 
-        if not _table_exists(conn, "hosted_rooms"):
-            raise AttachmentNotFoundError("Group Chat is unavailable to viewers")
-        room = conn.execute(
-            """SELECT authority_gateway_id, authority_epoch, disbanded_at
-               FROM hosted_rooms WHERE room_id=?""",
-            (room_id,),
-        ).fetchone()
-        if (
-            room is None
-            or room["disbanded_at"] is not None
-            or room["authority_gateway_id"] != authority_gateway_id
-            or room["authority_epoch"] != authority_epoch
-        ):
+        try:
+            room = viewer_room_state(conn, room_id=room_id)
+        except (HostedRoomError, sqlite3.Error) as exc:
+            raise AttachmentNotFoundError("Group Chat viewer state is unavailable") from exc
+        if (room["authority_gateway_id"] != authority_gateway_id
+                or room["authority_epoch"] != authority_epoch):
             raise AttachmentNotFoundError("Group Chat viewer authority changed")
-        # Files-only sources need not install the optional safety/retirement schema.
-        for table in ("hosted_room_quarantine", "hosted_room_disband_fences"):
-            if _table_exists(conn, table) and conn.execute(
-                f"SELECT 1 FROM {table} WHERE room_id=?", (room_id,),
-            ).fetchone() is not None:
-                raise AttachmentNotFoundError("Group Chat is unavailable to viewers")
 
 
     @staticmethod
@@ -1210,10 +1223,13 @@ class HostedRoomAttachmentStore:
         viewer: bool,
         now: float,
     ) -> sqlite3.Row:
-        row = conn.execute(
-            "SELECT * FROM hosted_room_attachments WHERE attachment_id=? AND room_id=?",
+        rows = conn.execute(
+            "SELECT * FROM hosted_room_attachments WHERE attachment_id=? AND room_id=? LIMIT 2",
             (attachment_id, room_id),
-        ).fetchone()
+        ).fetchall()
+        if viewer and len(rows) != 1:
+            raise AttachmentNotFoundError("attachment viewer ownership is missing or ambiguous")
+        row = rows[0] if rows else None
         if row is None or str(row["state"]) != "committed":
             raise AttachmentNotFoundError("attachment is not committed for this room")
         if row["expires_at"] is not None and float(row["expires_at"]) <= now:
@@ -1232,11 +1248,14 @@ class HostedRoomAttachmentStore:
                 raise AttachmentNotFoundError(
                     "attachment is not published in this room"
                 )
-            owner = conn.execute(
+            owners = conn.execute(
                 """SELECT payload_json FROM hosted_room_events
-                       WHERE room_id=? AND event_id=? AND kind IN ('message.user', 'message.member')""",
+                       WHERE room_id=? AND event_id=? AND kind IN ('message.user', 'message.member') LIMIT 2""",
                 (room_id, str(row["event_id"] or "")),
-            ).fetchone()
+            ).fetchall()
+            if viewer and len(owners) != 1:
+                raise AttachmentNotFoundError("attachment published owner is missing or ambiguous")
+            owner = owners[0] if owners else None
             manifest = {
                 key: row[key]
                 for key in ("attachment_id", "kind", "name", "size", "mime")
@@ -1262,9 +1281,35 @@ class HostedRoomAttachmentStore:
         return row
 
 
+    def list_published(
+        self,
+        *,
+        room_id: Any,
+        authority_gateway_id: Any,
+        authority_epoch: Any,
+        cursor: Any = None,
+        limit: Any = None,
+        query: Any = None,
+        producer_member_id: Any = None,
+        recipient_member_id: Any = None,
+    ) -> dict[str, Any]:
+        """Read the bounded catalog without duplicating the byte store."""
+        from gateway.hosted_room_attachment_catalog import list_published
+
+        return list_published(
+            self, room_id=room_id, authority_gateway_id=authority_gateway_id,
+            authority_epoch=authority_epoch, cursor=cursor, limit=limit,
+            query=query, producer_member_id=producer_member_id,
+            recipient_member_id=recipient_member_id,
+        )
 
 
 __all__ = [
+    "ATTACHMENT_LIST_EVENT_SCAN_LIMIT",
+    "AttachmentCursorError",
+    "DEFAULT_ATTACHMENT_LIST_LIMIT",
+    "MAX_ATTACHMENT_LIST_LIMIT",
+    "MAX_ATTACHMENT_LIST_RESPONSE_BYTES",
     "AttachmentConflictError",
     "AttachmentData",
     "AttachmentError",
@@ -1353,6 +1398,18 @@ def retain_message_attachments(
     )
 
 
+def _catalog_limit(value: Any) -> int:
+    if value is None:
+        return DEFAULT_ATTACHMENT_LIST_LIMIT
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AttachmentError("attachment list limit must be an integer")
+    if not 1 <= value <= MAX_ATTACHMENT_LIST_LIMIT:
+        raise AttachmentError(
+            f"attachment list limit must be between 1 and {MAX_ATTACHMENT_LIST_LIMIT}"
+        )
+    return value
+
+
 def fold_catalog_text(value: str) -> str:
     if value.isascii():
         return value.lower()
@@ -1360,3 +1417,24 @@ def fold_catalog_text(value: str) -> str:
         char for char in unicodedata.normalize("NFKD", value).casefold()
         if not unicodedata.combining(char)
     )
+
+
+def _catalog_query(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise AttachmentError("attachment query must be a string")
+    if len(value) > MAX_ATTACHMENT_LIST_QUERY_CHARS:
+        raise AttachmentError("attachment query is too long")
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        raise AttachmentError("attachment query must contain valid Unicode") from None
+    folded = fold_catalog_text(value.strip())
+    if len(folded) > MAX_ATTACHMENT_LIST_QUERY_CHARS * 32:
+        raise AttachmentError("attachment query is too long")
+    return folded
+
+
+class AttachmentCursorError(AttachmentError):
+    """The caller must explicitly restart discovery from Latest."""
