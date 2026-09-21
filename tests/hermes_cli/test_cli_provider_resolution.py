@@ -1018,3 +1018,67 @@ def test_save_custom_provider_updates_an_unnamed_legacy_entry_in_place(monkeypat
     assert entries[0]["api_key"] == "sk-2"
     assert entries[0]["model"] == "m1"
 
+
+def test_save_custom_provider_rejects_a_nameless_save_when_named_scopes_share_the_url(monkeypatch, tmp_path):
+    """With two named scopes on one endpoint a nameless save has no scope to target.
+
+    Keeping the legacy URL-only match here would mutate whichever entry happens to come first in
+    ``custom_providers`` — i.e. silently bill the wrong subscription — so the save must refuse
+    instead, and touch nothing on its way out.
+    """
+    import pytest
+    import yaml
+
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({"custom_providers": [
+        {"name": "OpenCode Zen (work)", "base_url": SHARED_URL, "api_key": "sk-work",
+         "key_env": "OPENCODE_ZEN_WORK_API_KEY"},
+        {"name": "OpenCode Zen (personal)", "base_url": SHARED_URL, "api_key": "sk-personal",
+         "key_env": "OPENCODE_ZEN_PERSONAL_API_KEY"},
+    ]}), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {})
+    monkeypatch.setattr("hermes_cli.config.save_config",
+                        lambda cfg: cfg_path.write_text(yaml.dump(cfg), encoding="utf-8"))
+
+    with pytest.raises(ValueError):
+        _save_custom_provider(SHARED_URL, api_key="sk-rotated", model="m2")
+
+    entries = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"]
+    assert [(e["name"], e["api_key"], e.get("model")) for e in entries] == [
+        ("OpenCode Zen (work)", "sk-work", None),
+        ("OpenCode Zen (personal)", "sk-personal", None),
+    ]
+
+
+def test_save_custom_provider_nameless_save_still_updates_ambiguous_free_legacy_rows(monkeypatch, tmp_path):
+    """The ambiguity guard must key on identity, not on the row count alone.
+
+    Two hand-written rows with no name carry no identity either side can disagree about, so the
+    unnamed save keeps working in place — that path is what stops a re-save from appending a
+    duplicate next to the endpoint it means to update (#118293).
+    """
+    import yaml
+
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({"custom_providers": [
+        {"base_url": SHARED_URL, "api_key": "sk-1"},
+        {"base_url": SHARED_URL, "api_key": "sk-legacy"},
+    ]}), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {})
+    monkeypatch.setattr("hermes_cli.config.save_config",
+                        lambda cfg: cfg_path.write_text(yaml.dump(cfg), encoding="utf-8"))
+
+    _save_custom_provider(SHARED_URL, api_key="sk-2", model="m1")
+
+    entries = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["custom_providers"]
+    assert len(entries) == 2
+    assert entries[0]["api_key"] == "sk-2"
+    assert entries[0]["model"] == "m1"
+    assert entries[1]["api_key"] == "sk-legacy"
+

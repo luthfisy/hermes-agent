@@ -480,6 +480,10 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
     matches on the URL alone: an unnamed caller updates the endpoint in place, and an unnamed
     legacy entry is updated by a named save rather than duplicated next to itself.
 
+    An unnamed caller only stays supported while the URL is unambiguous. With two or more entries
+    on one URL and at least one of them named, a nameless save has no scope to target, and picking
+    list order would mutate — and bill — the wrong scope, so it raises instead.
+
     *key_env* set means the caller already wrote the key to ``.env``; the entry references it
     instead of inlining the secret.
 
@@ -492,9 +496,20 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
     if not isinstance(providers, list):
         providers = []
     requested_name = str(name or "").strip()
-    for entry in providers:
-        if not (isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")):
-            continue
+    url_matches = [
+        entry for entry in providers
+        if isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")
+    ]
+    if not requested_name and len(url_matches) > 1 and any(
+        str(entry.get("name") or "").strip() for entry in url_matches
+    ):
+        raise ValueError(
+            f"Cannot save a custom provider for {base_url.rstrip('/')!r} without a scope name: "
+            f"{len(url_matches)} entries share that endpoint and at least one is named, so an "
+            "unnamed save has no scope to target (picking one would silently mutate and bill the "
+            "wrong credential). Pass the scope's name explicitly."
+        )
+    for entry in url_matches:
         entry_name = str(entry.get("name") or "").strip()
         if requested_name and entry_name and not (
             custom_provider_aliases(requested_name, "") &
