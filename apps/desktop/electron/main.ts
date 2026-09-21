@@ -37,6 +37,7 @@ import {
   downloadAgentFor,
   htmlResponseError,
   httpStatusError,
+  isSessionNotFound,
   jsonAgentFor,
   readJsonErrorBody,
   readStatusCode,
@@ -17173,6 +17174,17 @@ async function handleHermesApiRequest(request) {
     connection = await ensureBackend(routeProfile, { passive: request?.passive, spawnPriority })
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
+    // FASE 1 — Logging diagnóstico para identificar session_id e endpoint que 404a
+    if (request?.path?.includes('/api/sessions/')) {
+      const sessionIdFromPath = request.path.split('/api/sessions/')[1]?.split('?')[0]?.split('/')[0] || ''
+      const sessionIdFromBody = request?.body?.session_id || ''
+      rememberLog(
+        `[hermes:api] session request: method=${request.method} path=${request.path} ` +
+        `routeProfile=${routeProfile} sessionId(path)=${sessionIdFromPath} ` +
+        `sessionId(body)=${sessionIdFromBody} connectionPort=${connection?.port}`
+      )
+    }
+
     response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
       method: request?.method,
       body: request?.body,
@@ -17187,6 +17199,30 @@ async function handleHermesApiRequest(request) {
         await profileRename.rollback()
       } catch (rollbackError) {
         rememberLog(`Failed to restore primary profile after rename error: ${String(rollbackError)}`)
+      }
+    }
+
+    // FASE 1 — Logging de erro 404 para diagnóstico
+    if (request?.path?.includes('/api/sessions/') && error instanceof Error) {
+      const status = (error as { statusCode?: number }).statusCode
+      if (status === 404) {
+        rememberLog(
+          `[hermes:api] 404 on session request: method=${request.method} path=${request.path} ` +
+          `routeProfile=${routeProfile} error=${error.message}`
+        )
+      }
+    }
+
+    // FASE 2 — Tratar 404 de sessão como erro estruturado, não exceção
+    if (isSessionNotFound(error)) {
+      const sessionIdFromPath = request?.path?.split('/api/sessions/')[1]?.split('?')[0]?.split('/')[0] || ''
+      const sessionIdFromBody = request?.body?.session_id || ''
+      return {
+        error: {
+          code: 'SESSION_NOT_FOUND',
+          sessionId: sessionIdFromPath || sessionIdFromBody || '',
+          message: (error instanceof Error ? error.message : String(error)).slice(0, 200)
+        }
       }
     }
 

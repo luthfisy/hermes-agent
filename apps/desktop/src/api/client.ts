@@ -147,8 +147,28 @@ export function ambientOwnerConnectionId(): string | undefined {
  *  pin — `'local'` included — so a pin always overrides the ambient tag spread
  *  underneath it. (It used to omit the key for 'local', which made the pin
  *  unable to beat the ambient tag; helpers then had to bypass this wrapper.) */
+
+/** FASE 3 — Erro classificado quando o backend retorna SESSION_NOT_FOUND (404). */
+export class SessionNotFoundError extends Error {
+  readonly sessionId: string
+  constructor(sessionId: string, message?: string) {
+    super(message || `Session not found: ${sessionId}`)
+    this.name = 'SessionNotFoundError'
+    this.sessionId = sessionId
+  }
+}
+
 export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
-  return window.hermesDesktop.api<T>({ ...connectionScoped(), ...request })
+  return window.hermesDesktop.api<T>({ ...connectionScoped(), ...request }).then(response => {
+    // FASE 3 — Detectar erro estruturado SESSION_NOT_FOUND retornado pelo main process
+    if (response && typeof response === 'object' && 'error' in response) {
+      const err = (response as { error?: { code?: string; sessionId?: string; message?: string } }).error
+      if (err?.code === 'SESSION_NOT_FOUND') {
+        throw new SessionNotFoundError(err.sessionId || '', err.message)
+      }
+    }
+    return response as T
+  })
 }
 
 // ── Capability scope: (connection, profile) routing for the Capabilities

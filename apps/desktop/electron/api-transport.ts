@@ -194,6 +194,20 @@ function readStatusCode(error: unknown): number {
   return Number(error && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : NaN)
 }
 
+/** True when a REST request 404'd with "Session not found" (session_not_found). */
+function isSessionNotFound(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+  if ((error as { statusCode?: unknown }).statusCode !== 404) {
+    return false
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return /session.?not.?found/i.test(message)
+}
+
+
+
 /**
  * The structured JSON body an httpStatusError carries after its "<status>: "
  * prefix, or null when the body was not a JSON object. NAS answers
@@ -274,6 +288,7 @@ export {
   htmlResponseError,
   httpStatusError,
   isIdempotentMethod,
+  isSessionNotFound,
   isTransientTransportError,
   jsonAgentFor,
   readJsonErrorBody,

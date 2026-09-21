@@ -1,12 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
+vi.mock('@/lib/legacy-session-owner-backfill', () => ({ maybeBackfillLegacySessionOwners: vi.fn() }))
+vi.mock('@/lib/session-owner-stamp', () => ({
+  stampRowsWithOwningConnection: vi.fn((sessions: any[], connectionId?: string | null) => {
+    const owner = String(connectionId ?? '').trim()
+    if (!owner || owner === 'local') {
+      return sessions
+    }
+    return sessions.map((session: any) =>
+      session.connection_id && typeof session.connection_id === 'string' && session.connection_id.trim()
+        ? session
+        : { ...session, connection_id: owner }
+    )
+  })
+}))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
   capabilityScoped: vi.fn(),
   getApiRequestConnection: vi.fn(() => 'prometheus'),
   hermesApi: vi.fn(),
-  profileScoped: vi.fn(() => ({}))
+  profileScoped: vi.fn(() => ({})),
+  SessionNotFoundError: class extends Error {
+    sessionId: string
+    constructor(sessionId: string, message?: string) {
+      super(message || `Session not found: ${sessionId}`)
+      this.sessionId = sessionId
+    }
+  }
 }))
 
 const client = await import('./client')
