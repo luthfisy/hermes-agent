@@ -1008,7 +1008,7 @@ auxiliary:
 ```
 
 :::tip `max_tail_message_floor`
-`protect_last_n` is honored up to a cap of 8 messages by default (`compression.max_tail_message_floor: 0` = that built-in 8). The cap stops a run of bulky tool results from forcing the whole `protect_last_n` window verbatim into the tail. Set it higher (e.g. 20) to keep more recent messages verbatim; on a lean tail the floor has no token bound yet, so a raised floor keeps N messages regardless of their size (#108647).
+`protect_last_n` is honored up to a cap of 8 messages by default (`compression.max_tail_message_floor: 0` = that built-in 8). The cap stops a run of bulky tool results from forcing the whole `protect_last_n` window verbatim into the tail. Set it higher (e.g. 20) to keep more recent messages verbatim; the tail is still token-bounded at 20% of the context window (`TAIL_MAX_CONTEXT_FRACTION`), so the floor only widens the verbatim window when the budget has room (#108647).
 :::
 
 :::info Legacy config migration
