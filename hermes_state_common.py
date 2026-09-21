@@ -428,6 +428,16 @@ CREATE TABLE IF NOT EXISTS messages (
     display_order INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS conversation_changes (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    change_type TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    message_id INTEGER,
+    content_hash TEXT,
+    state TEXT,
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,

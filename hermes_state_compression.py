@@ -11,6 +11,7 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from conversation_index import ConversationChangeType
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
     _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
@@ -306,6 +307,9 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
             if updated.rowcount != 1:
                 raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
+            self._record_conversation_change(
+                conn, ConversationChangeType.CONVERSATION_RECONCILE, child_session_id,
+            )
         self._execute_write(_do)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:

@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from conversation_index import ConversationChangeType
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
@@ -602,6 +603,9 @@ class SessionPortabilityMixin:
                     skipped_ids.append(session_id)
                     continue
                 self._import_session_row(conn, raw, item["messages"], session_id)
+                self._record_conversation_change(
+                    conn, ConversationChangeType.CONVERSATION_RECONCILE, session_id,
+                )
                 parent_id = str(raw.get("parent_session_id") or "").strip()
                 if parent_id:
                     parent_updates.append((session_id, parent_id))

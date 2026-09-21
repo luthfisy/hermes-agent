@@ -10,6 +10,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from conversation_index import ConversationChangeType
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, _is_checkpoint_item, _newest_checkpoint_carrier,
     split_user_originated_turn)
@@ -314,6 +315,7 @@ class SessionMessagesMixin:
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
+            self._record_message_change(conn, ConversationChangeType.MESSAGE_UPSERT, session_id, msg_id)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
@@ -349,6 +351,7 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
+            self._record_message_change(conn, ConversationChangeType.MESSAGE_UPSERT, session_id, msg_id)
             return msg_id
 
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
@@ -370,10 +373,21 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             from agent.transcript_repair import resolve_and_repair_transcript_batch
-            inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
-                encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
+            repaired_ids: List[int] = []
+            inserted_rows = resolve_and_repair_transcript_batch(
+                conn, session_id, messages, encode_content_fn=self._encode_content,
+                decode_content_fn=self._decode_content, repaired_ids=repaired_ids,
+            )
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            for message_id in repaired_ids:
+                self._record_message_change(
+                    conn, ConversationChangeType.MESSAGE_UPSERT, session_id, message_id,
+                )
+            for message in inserted_rows:
+                self._record_message_change(
+                    conn, ConversationChangeType.MESSAGE_UPSERT, session_id, int(message["_row_id"]),
+                )
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
@@ -574,6 +588,7 @@ class SessionMessagesMixin:
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
             kept = kept_tool_calls = 0
+            dropped_ids: List[int] = []
             if archive_dropped:
                 # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
                 # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
@@ -582,13 +597,31 @@ class SessionMessagesMixin:
                 kept_tool_calls = sum(_tool_calls_len(row[4], scalar=1) for row in live[:kept])
                 if kept < len(live):
                     # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
+                    archive_anchor = int(live[kept][0])
+                    dropped_ids = [int(row[0]) for row in conn.execute(
+                        "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND id >= ? ORDER BY id",
+                        (session_id, archive_anchor),
+                    ).fetchall()]
                     conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id >= ?",
-                                 (session_id, live[kept][0]))
+                                 (session_id, archive_anchor))
             else:
                 conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
             inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
                          (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
+            if archive_dropped:
+                for message_id in dropped_ids:
+                    self._record_message_change(
+                        conn, ConversationChangeType.MESSAGE_STATE, session_id, message_id,
+                    )
+                for message in messages[kept:]:
+                    self._record_message_change(
+                        conn, ConversationChangeType.MESSAGE_UPSERT, session_id, int(message["_row_id"]),
+                    )
+            else:
+                self._record_conversation_change(
+                    conn, ConversationChangeType.CONVERSATION_RECONCILE, session_id,
+                )
         self._execute_write(_do)
 
     @classmethod
@@ -721,6 +754,9 @@ class SessionMessagesMixin:
                 tool_calls_total += tail_tool_calls
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+            self._record_conversation_change(
+                conn, ConversationChangeType.CONVERSATION_RECONCILE, session_id,
+            )
             return inserted
         return self._execute_write(_do)
 
@@ -787,9 +823,17 @@ class SessionMessagesMixin:
         raw keystrokes, and the turn must not append a second row for the same input."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
-        return self._write_rowcount(
-            "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (self._encode_content(content), row_id, session_id))
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
+                (self._encode_content(content), row_id, session_id),
+            )
+            if cursor.rowcount:
+                self._record_message_change(
+                    conn, ConversationChangeType.MESSAGE_UPSERT, session_id, row_id,
+                )
+            return cursor.rowcount
+        return self._execute_write(_do)
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
@@ -1362,6 +1406,14 @@ class SessionMessagesMixin:
                 "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
             message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
+            for message_id in ids:
+                self._record_message_change(
+                    conn, ConversationChangeType.MESSAGE_STATE, session_id, int(message_id),
+                )
+            if replacement_message_id is not None:
+                self._record_message_change(
+                    conn, ConversationChangeType.MESSAGE_UPSERT, session_id, replacement_message_id,
+                )
             head_id = conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
             return target_row, ids, head_id, replacement_message_id
@@ -1445,6 +1497,9 @@ class SessionMessagesMixin:
         def _do(conn):
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute(_RESET_COUNTERS_SQL, (session_id,))
+            self._record_conversation_change(
+                conn, ConversationChangeType.CONVERSATION_RECONCILE, session_id,
+            )
         self._execute_write(_do)
 
     def purge_stale_tool_call_markers(self, *, dry_run: bool = False, backup: bool = True) -> Dict[str, Any]:
@@ -1474,7 +1529,15 @@ class SessionMessagesMixin:
         def _do(conn):
             ids = _find_affected(conn)
             if ids:
+                rows = conn.execute(
+                    f"SELECT id, session_id FROM messages WHERE id IN ({_placeholders(ids)})", ids,
+                ).fetchall()
+                session_by_id = {int(row["id"]): row["session_id"] for row in rows}
                 conn.execute(f"UPDATE messages SET content = '' WHERE id IN ({_placeholders(ids)})", ids)
+                for message_id in ids:
+                    self._record_message_change(
+                        conn, ConversationChangeType.MESSAGE_UPSERT, session_by_id[int(message_id)], int(message_id),
+                    )
             return ids
         affected_ids = self._execute_write(_do)
         if affected_ids:

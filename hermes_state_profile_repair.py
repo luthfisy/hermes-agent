@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from conversation_index import ConversationChangeType
 from hermes_state_common import _id_chunks, _placeholders as _session_ids_placeholders
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,9 @@ class SessionProfileRepairMixin:
                 self._insert_row(conn, "messages", {**message, "session_id": session_id}, skip=_MESSAGE_MOVE_SKIP)
             for usage in payload.get("usage") or []:
                 self._insert_row(conn, "session_model_usage", {**usage, "session_id": session_id}, skip=frozenset())
+            self._record_conversation_change(
+                conn, ConversationChangeType.CONVERSATION_RECONCILE, session_id,
+            )
             return "imported"
         return self._execute_write(_do)
 
@@ -240,6 +244,9 @@ class SessionProfileRepairMixin:
             conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
+            self._record_conversation_change(
+                conn, ConversationChangeType.CONVERSATION_DELETE, session_id,
+            )
             return True
         return bool(self._execute_write(_do))
 

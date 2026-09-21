@@ -310,7 +310,7 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 | Phase | Status | Completion gate |
 | --- | --- | --- |
 | 0. Contract/baseline | Complete | Ownership and event semantics frozen |
-| 1. Transactional feed | Planned | Every target mutation publishes atomically |
+| 1. Transactional feed | Complete | Every target mutation publishes atomically |
 | 2. Source + hydration API | Planned | Stable refs can be safely hydrated |
 | 3. Async index capability | Planned | Plugin outage never blocks chat |
 | 4. Search/reference path | Planned | Derived search cannot bypass core authorization |
@@ -359,6 +359,12 @@ Do not load plugins or start background workers in this phase.
 3. rewind/replace/compaction/deletion emit the expected invalidation/tombstone semantics;
 4. default session behaviour is otherwise byte/row compatible where observable; and
 5. feed contains no message body.
+
+**Status: complete.** The body-free `conversation_changes` outbox is created with the canonical
+SQLite schema, and all known canonical transcript mutation paths either append an atomic feed
+record on the same transaction or are explicitly feed-invisible under the Phase 0 contract.
+Focused feed tests cover atomic rollback, append, repair, replace, rewind, both compaction modes,
+content rewrite, import/profile move, deletion, pruning, and empty-session sweeping.
 
 ## Phase 2 — Canonical source and hydration API
 
