@@ -11421,7 +11421,11 @@ function profileRouteOptions(profile, request?) {
 // primary, so legacy callers are unchanged.
 async function ensureBackend(
   profile,
-  opts: { passive?: boolean; request?: { method?: string; path?: string }; spawnPriority?: LocalBackendSpawnPriority } = {}
+  opts: {
+    passive?: boolean
+    request?: { method?: string; path?: string }
+    spawnPriority?: LocalBackendSpawnPriority
+  } = {}
 ) {
   localBackendLifecycle.assertCanStart()
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
