@@ -5,7 +5,7 @@ description: "Roadmap for asynchronous derived conversation indexing over Hermes
 
 # Conversation Index Roadmap
 
-Status: **planned**  
+Status: **in progress**
 Last reviewed: **2026-09-21**
 
 This roadmap replaces the canonical-storage direction explored in PR #117813. Hermes keeps one authoritative transcript in its existing core session store. Optional plugins may build rebuildable derived indexes over that transcript, but they do not own conversation persistence, authorization, routing, lifecycle, deletion, backup, or canonical message bodies.
@@ -75,21 +75,27 @@ The previous `ConversationStore` ownership design should not be incrementally re
 
 The feed exposes lightweight durable mutation records. Exact encoding is an implementation detail, but the semantic record needs enough information for an index to determine what must be added, refreshed, invalidated, or rebuilt.
 
-Candidate shape:
+The Phase 0 contract is frozen in
+[Conversation Index Phase 0 Contract](./conversation-index-phase0.md). Its body-free
+event vocabulary is `message_upsert`, `message_state`, `conversation_reconcile`, and
+`conversation_delete`; message state is `active`, `compacted`, or `inactive`.
 
 ```python
 @dataclass(frozen=True)
 class ConversationChange:
     sequence: int
-    event_type: str
+    change_type: ConversationChangeType
     conversation_id: str
-    message_id: int | None
-    content_hash: str | None
-    active: bool | None
     created_at: float
+    message_id: int | None = None
+    content_hash: str | None = None
+    state: MessageIndexState | None = None
 ```
 
-The feed must never require full message text. Bulk lifecycle operations may use compact identifier-only payloads or a conversation-level "reconcile/rebuild this conversation" event where enumerating every affected row would be pathological.
+`conversation_id` is the physical canonical `sessions.id`; compression-lineage
+composition remains a Hermes responsibility. The feed never contains full message text.
+Bulk lifecycle operations use `conversation_reconcile` rather than enumerating a
+pathological or identity-fragile set of row transitions.
 
 Required event semantics include:
 
@@ -159,17 +165,18 @@ Add a small canonical outbox table beside the transcript state. The initial sche
 ```sql
 CREATE TABLE conversation_changes (
     sequence         INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type       TEXT NOT NULL,
+    change_type      TEXT NOT NULL,
     conversation_id  TEXT NOT NULL,
     message_id       INTEGER,
     content_hash     TEXT,
-    active           INTEGER,
-    payload_json     TEXT,
+    state            TEXT,
     created_at       REAL NOT NULL
 );
 ```
 
-`payload_json`, if retained, is identifier/transition metadata only and must not contain canonical message bodies.
+The initial feed needs no arbitrary payload column. Conversation-level reconcile/delete
+events carry only the physical conversation ID; message events carry only identity, hash,
+and state.
 
 ### Transaction rule
 
@@ -302,7 +309,7 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 
 | Phase | Status | Completion gate |
 | --- | --- | --- |
-| 0. Contract/baseline | Planned | Ownership and event semantics frozen |
+| 0. Contract/baseline | Complete | Ownership and event semantics frozen |
 | 1. Transactional feed | Planned | Every target mutation publishes atomically |
 | 2. Source + hydration API | Planned | Stable refs can be safely hydrated |
 | 3. Async index capability | Planned | Plugin outage never blocks chat |
@@ -323,7 +330,11 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 
 **Exit**
 
-No implementation begins until every transcript mutation has an explicit feed consequence or an explicit "no index-visible change" classification.
+Complete. The frozen inventory, physical identity rules, hash boundary, message-state
+semantics, plugin capability decision, and pre-outbox baseline are recorded in
+[Conversation Index Phase 0 Contract](./conversation-index-phase0.md). Every known
+canonical transcript mutation now has either an explicit Phase 1 feed consequence or an
+explicit no-index-visible-change classification.
 
 ## Phase 1 — Transactional change feed
 
