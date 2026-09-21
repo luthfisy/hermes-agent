@@ -22,7 +22,8 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
+    SKILLS_GUIDANCE, SKILL_GRAPH_GUIDANCE, SKILL_GRAPH_IDENTITY, STEER_CHANNEL_NOTE,
+    TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
 from agent import prompt_builder as _pb
@@ -292,6 +293,9 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         memory_guidance,
         SESSION_SEARCH_GUIDANCE if "session_search" in names else None,
         SKILLS_GUIDANCE if "skill_manage" in names else None,
+        SKILL_GRAPH_GUIDANCE if (
+            getattr(agent, "_skill_graph_mode", False) and "skill_graph_search" in names
+        ) else None,
         _kanban_guidance,
     ]
     return " ".join(g for g in tool_guidance if g) or None
@@ -300,6 +304,11 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 def _skills_prompt(agent: Any) -> str:
     """Skills index (empty without skills tools).  Focus mode demotes non-coding
     categories to names-only — never hidden, every name stays visible."""
+    if (
+        getattr(agent, "_skill_graph_mode", False)
+        and "skill_graph_search" in getattr(agent, "valid_tool_names", [])
+    ):
+        return ""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
     import model_tools
@@ -669,6 +678,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
+    # The graph protocol belongs to the stable identity tier: it is fixed for
+    # the life of a session and does not expand the prompt into a flat catalog.
+    if (
+        getattr(agent, "_skill_graph_mode", False)
+        and "skill_graph_search" in getattr(agent, "valid_tool_names", [])
+    ):
+        stable_parts.append(SKILL_GRAPH_IDENTITY)
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
@@ -676,6 +692,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
     stable_parts.extend(_guidance_parts(agent))
     skills_prompt = _skills_prompt(agent)
+    # Discovery plugins may replace the index and append stable protocol/guidance.
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        for hook_result in invoke_hook(
+            "build_skills_index", agent=agent, skills_prompt=skills_prompt,
+            valid_tool_names=set(agent.valid_tool_names),
+        ) or []:
+            if not isinstance(hook_result, dict):
+                continue
+            if "skills_prompt" in hook_result:
+                skills_prompt = hook_result["skills_prompt"]
+            if hook_result.get("identity"):
+                stable_parts.append(hook_result["identity"])
+            if hook_result.get("guidance"):
+                stable_parts.append(hook_result["guidance"])
+    except Exception as exc:
+        logger.warning("build_skills_index hook failed: %s", exc)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
