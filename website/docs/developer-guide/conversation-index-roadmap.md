@@ -313,7 +313,7 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 | 1. Transactional feed | Complete | Every target mutation publishes atomically |
 | 2. Source + hydration API | Complete | Stable refs can be safely hydrated |
 | 3. Async index capability | Complete | Plugin outage never blocks chat |
-| 4. Search/reference path | Planned | Derived search cannot bypass core authorization |
+| 4. Search/reference path | Complete | Derived search cannot bypass core authorization |
 | 5. Rebuild/status | Planned | Lost index rebuilds from canonical state |
 | 6. Canonical-owner acceptance | Planned | Gateway/worker paths produce one canonical row and one derived entry |
 | 7. Semantic compaction proposals | Later/separate | Optional compactor cannot mutate canonical history directly |
@@ -439,16 +439,38 @@ the async feed is the sole new transcript-derived ingestion path.
 
 ## Phase 4 — Search references and hydration
 
-Wire optional vector/memory search through `MessageReference` hydration.
+**Status: complete.** Optional derived search now has a distinct core-owned path rather
+than changing Hermes' existing FTS `session_search`. A `ConversationIndexSearchService`
+opens only the current profile's canonical state read-only, initializes the selected
+`ConversationIndex` with the Phase 2 source facade, passes the caller's explicit
+conversation scope only after Hermes intersects it with conversations that actually
+exist in that profile, and accepts only `MessageReference` results.
 
-Tests must cover:
+The plugin never supplies authoritative text. Hermes hydrates every accepted reference
+against canonical state and drops hits that are deleted, rewound/inactive, hash-stale,
+out of range, outside the authorized conversation set, or otherwise malformed. Mixed
+result batches degrade per hit: stale or forged refs do not suppress valid refs. Plugin
+output is bounded before hydration, and index/search failures return no derived hits
+without affecting canonical FTS or chat persistence.
 
-- deleted message;
-- rewound/inactive message;
+External memory providers receive an optional `conversation_index_search` callable in
+their existing `initialize(..., **kwargs)` context when a conversation-index provider
+name is configured. The callback lazily acquires the canonical profile DB, invokes the
+core search path, and returns only Hermes-authorized/hydrated hits. This gives packages
+such as Reliquary a usable semantic transcript-search seam without extending
+`MemoryProvider` itself or letting provider code hydrate references directly.
+
+Coverage includes:
+
+- deleted messages/conversations;
+- rewound/inactive messages;
 - edited message/hash mismatch;
 - invalid offsets;
-- forged conversation/profile reference; and
-- mixed valid/stale results where valid refs still hydrate.
+- explicit conversation-scope narrowing;
+- forged cross-profile references;
+- malformed plugin results;
+- mixed valid/stale results where valid refs still hydrate; and
+- unavailable/failing plugin search remaining non-fatal.
 
 ## Phase 5 — Rebuild, lag, and operator status
 

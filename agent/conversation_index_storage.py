@@ -64,3 +64,6 @@ class ConversationIndexSourceFacade:
 
     def list_index_conversation_ids(self, **kwargs):
         return self._db.list_index_conversation_ids(**kwargs)
+
+    def resolve_index_conversation_ids(self, conversation_ids):
+        return self._db.resolve_index_conversation_ids(conversation_ids)

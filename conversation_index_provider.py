@@ -21,6 +21,10 @@ class ConversationIndexSource(Protocol):
         self, *, after_id: Optional[str] = None, limit: int = 1000,
     ) -> Tuple[str, ...]: ...
 
+    def resolve_index_conversation_ids(
+        self, conversation_ids: Sequence[str],
+    ) -> Tuple[str, ...]: ...
+
 
 class ConversationIndex(ABC):
     """Optional derived transcript index. Hermes remains canonical."""

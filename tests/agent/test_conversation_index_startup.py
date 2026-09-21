@@ -4,11 +4,14 @@ from unittest.mock import patch
 class RecordingMemoryProvider:
     name = "recording"
 
+    def __init__(self):
+        self.init_kwargs = {}
+
     def is_available(self):
         return True
 
     def initialize(self, session_id, **kwargs):
-        pass
+        self.init_kwargs = dict(kwargs)
 
     def get_tool_schemas(self):
         return []
@@ -52,4 +55,19 @@ def test_configured_memory_package_starts_index_after_canonical_db_exists():
     assert kwargs["db_path"] == db.db_path
     assert kwargs["hermes_home"] == agent._conversation_index_hermes_home
     assert kwargs["profile_name"] == agent._conversation_index_profile_name
+
+    search_callback = provider.init_kwargs["conversation_index_search"]
+    with patch(
+        "agent.conversation_index_search_runtime.search_conversation_index",
+        return_value=("hydrated",),
+    ) as search:
+        assert search_callback("needle", conversation_ids=["alpha"], limit=7) == ("hydrated",)
+    search.assert_called_once()
+    search_kwargs = search.call_args.kwargs
+    assert search_kwargs["provider_name"] == "recording"
+    assert search_kwargs["db_path"] == db.db_path
+    assert search_kwargs["hermes_home"] == agent._conversation_index_hermes_home
+    assert search_kwargs["profile_name"] == agent._conversation_index_profile_name
+    assert search_kwargs["conversation_ids"] == ["alpha"]
+    assert search_kwargs["limit"] == 7
     agent.close()

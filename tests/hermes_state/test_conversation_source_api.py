@@ -56,6 +56,14 @@ def test_profile_scoped_conversation_enumeration(tmp_path):
         second.close()
 
 
+def test_resolve_index_conversation_ids_intersects_profile_scope(db):
+    db.create_session("beta", source="test")
+
+    assert db.resolve_index_conversation_ids(["beta", "foreign", "alpha", "alpha"]) == (
+        "alpha", "beta",
+    )
+
+
 def test_snapshot_is_body_free_and_uses_feed_watermark(db):
     active_id = db.append_message("alpha", role="user", content="active body")
     compacted_id = db.append_message("alpha", role="assistant", content="compacted body")

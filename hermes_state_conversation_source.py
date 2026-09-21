@@ -128,6 +128,15 @@ class SessionConversationSourceMixin:
             )
         return tuple(sorted(found))
 
+    def resolve_index_conversation_ids(self, conversation_ids: Iterable[str]) -> tuple[str, ...]:
+        """Intersect an explicit caller scope with conversations in this profile."""
+        requested = self._normalize_index_conversation_ids(conversation_ids)
+        if not requested:
+            return ()
+        return self._read_index_snapshot(
+            lambda conn: self._existing_index_conversation_ids(conn, requested)
+        )
+
     def get_conversation_snapshot(
         self, *, conversation_ids: Optional[Iterable[str]] = None,
     ) -> ConversationSnapshot:

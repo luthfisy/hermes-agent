@@ -1248,6 +1248,24 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
             kwargs[_ident] = _val
     if agent.session_cwd:
         kwargs["cwd"] = agent.session_cwd
+
+    provider_name = getattr(agent, "_conversation_index_provider_name", "")
+    if provider_name:
+        def _conversation_index_search(query, *, conversation_ids=None, limit=10):
+            db = agent._get_session_db_for_recall()
+            if db is None:
+                return ()
+            from agent.conversation_index_search_runtime import search_conversation_index
+            return search_conversation_index(
+                provider_name=provider_name,
+                query=query,
+                db_path=db.db_path,
+                hermes_home=getattr(agent, "_conversation_index_hermes_home", None),
+                profile_name=getattr(agent, "_conversation_index_profile_name", None),
+                conversation_ids=conversation_ids,
+                limit=limit,
+            )
+        kwargs["conversation_index_search"] = _conversation_index_search
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
