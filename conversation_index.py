@@ -11,6 +11,8 @@ import json
 import math
 from dataclasses import dataclass, field
 from enum import Enum
+
+from conversation_index_provider import ConversationIndex, ConversationIndexSource
 from typing import Any, Mapping, Optional, Tuple
 
 

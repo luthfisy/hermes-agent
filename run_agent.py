@@ -299,6 +299,23 @@ class AIAgent(
         from agent.agent_init import init_agent
         init_agent(self, **init_kwargs)
 
+    def _ensure_conversation_index_runtime(self) -> None:
+        """Start the optional profile index only after this agent has a canonical DB handle."""
+        provider_name = getattr(self, "_conversation_index_provider_name", "")
+        session_db = getattr(self, "_session_db", None)
+        if not provider_name or session_db is None:
+            return
+        try:
+            from agent.conversation_index_runtime import ensure_conversation_index_consumer
+            ensure_conversation_index_consumer(
+                provider_name=provider_name,
+                db_path=session_db.db_path,
+                hermes_home=getattr(self, "_conversation_index_hermes_home", None),
+                profile_name=getattr(self, "_conversation_index_profile_name", None),
+            )
+        except Exception:
+            logger.debug("Conversation-index runtime unavailable", exc_info=True)
+
     def _get_session_db_for_recall(self):
         """SessionDB for recall, opening the default state DB when no ``session_db`` was passed so the
         advertised ``session_search`` tool stays usable."""
@@ -307,12 +324,14 @@ class AIAgent(
         if getattr(self, "_persist_disabled", False):
             return None
         if self._session_db is not None:
+            self._ensure_conversation_index_runtime()
             return self._session_db
         try:
             from hermes_state_registry import acquire
 
             self._session_db = acquire()
             self._owns_session_db = True  # we opened it, so close() must release it
+            self._ensure_conversation_index_runtime()
             return self._session_db
         except Exception:
             logger.debug("SessionDB unavailable for recall", exc_info=True)

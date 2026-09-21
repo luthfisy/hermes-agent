@@ -312,7 +312,7 @@ The compactor never closes, rewinds, deletes, or replaces a canonical conversati
 | 0. Contract/baseline | Complete | Ownership and event semantics frozen |
 | 1. Transactional feed | Complete | Every target mutation publishes atomically |
 | 2. Source + hydration API | Complete | Stable refs can be safely hydrated |
-| 3. Async index capability | Planned | Plugin outage never blocks chat |
+| 3. Async index capability | Complete | Plugin outage never blocks chat |
 | 4. Search/reference path | Planned | Derived search cannot bypass core authorization |
 | 5. Rebuild/status | Planned | Lost index rebuilds from canonical state |
 | 6. Canonical-owner acceptance | Planned | Gateway/worker paths produce one canonical row and one derived entry |
@@ -393,19 +393,49 @@ canonical state.
 
 ## Phase 3 — ConversationIndex capability and async consumer
 
-Add a narrow optional capability that can be supplied by the configured memory plugin/package.
+**Status: complete.** Derived indexing is a separate optional capability from
+`MemoryProvider`. Packages expose it through the dedicated
+`hermes_agent.conversation_indexes` entry-point group, keyed by the configured
+`memory.provider` name. A package may therefore supply memory recall, conversation
+indexing, both, or neither without coupling their lifecycles.
 
-Requirements:
+The `ConversationIndex` contract receives a narrow read-only source facade during
+initialization. The facade exposes only the Phase 2 snapshot, hydration, and physical
+conversation-enumeration APIs; it exposes no transcript mutation methods. Feed batches
+remain body-free, so a provider that needs canonical text hydrates it through this
+facade while processing an upsert.
 
-- plugin availability is checked outside `SessionDB` construction;
-- failed initialization marks indexing unavailable/stale without disabling sessions;
-- consumption is asynchronous and profile-scoped;
-- cursor advancement is durable only after the plugin durably applies the corresponding changes;
-- replaying the same sequence is idempotent;
-- consumer failure uses bounded backoff and exposes status; and
-- no plugin method is called while a transcript write transaction is open.
+Runtime ownership is profile-scoped:
 
-Existing `MemoryProvider.sync_turn()` must not become a second transcript-ingestion authority for a provider using the change feed. A provider may still use turn hooks for non-authoritative recall/UI behaviour.
+- no matching index entry point means no worker thread and no extra `SessionDB` handle;
+- availability is checked before the worker opens its read-only `SessionDB`;
+- the first local bootstrapper takes a non-blocking cross-process profile/index lock;
+- sibling processes remain standby and retry takeover if the owner exits;
+- the profile home/name captured during agent initialization is passed explicitly, so
+  multiplexed gateway profiles cannot drift to the process-global active profile;
+- the worker holds only a read-only `SessionDB`; canonical writes never reference the
+  index or wait for plugin acknowledgement.
+
+Hermes owns the durable consumer cursor under the profile home. A batch is delivered
+at least once: the plugin first durably applies an idempotent prefix and returns the
+last committed feed sequence; Hermes atomically publishes that cursor only afterward.
+A crash between those steps replays the same sequence instead of losing it. Invalid
+provider cursors are rejected without advancement.
+
+Consumer errors and runtime unavailability use bounded exponential backoff. Minimal
+internal status records state, cursor, failure count, retry time, and error class only;
+the richer lag/recovery operator surface remains Phase 5. A cursor older than the feed
+retention floor enters `rebuild_required`; Phase 5 performs the actual manifest rebuild.
+
+Startup is lazy. The configured capability name is remembered with memory configuration,
+but the worker starts only after the owning surface has established the canonical
+`SessionDB` (immediately for a supplied DB, or on the existing lazy DB acquisition
+path). Memory-package recovery/loading completes before an explicitly supplied DB starts
+the index capability.
+
+Existing `MemoryProvider.sync_turn()` is unchanged and remains non-authoritative for
+providers using the change feed. Turn hooks may still support recall/UI behaviour, but
+the async feed is the sole new transcript-derived ingestion path.
 
 ## Phase 4 — Search references and hydration
 
