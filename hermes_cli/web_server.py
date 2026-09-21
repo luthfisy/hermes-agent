@@ -129,7 +129,7 @@ except ImportError:
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn'"
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -228,6 +228,14 @@ async def _lifespan(app: "FastAPI"):
     # Live auto-archive timer — keeps a backend that stays up for days
     # sweeping stale sessions on schedule, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
+
+    # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
+    # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
+    # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
+    # first setup.status waits on the record (bounded) instead.
+    from hermes_cli.free_tier_bootstrap import start_background_bootstrap
+
+    start_background_bootstrap()
 
     try:
         yield
@@ -17380,6 +17388,22 @@ def start_server(
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)
+
+    # LAST boot step, deliberately. One host process serves every profile and this one can be asked
+    # for any of them via ``?profile=``, so the decision is made here instead of on the first such
+    # request — activation is one-way, and everything the backend had already done by then
+    # (idle-reaper flushes, hosted rooms, cron) stayed on single-profile assumptions. It runs after
+    # the keepalive / auth gate / uvicorn build because activation FREEZES ``os.environ`` as the
+    # launch profile's credentials, and that snapshot is the only source for launch keys with no
+    # ``.env`` to rebuild from (systemd ``Environment=``, ``op run``, Compose): anything injected or
+    # rotated by a later boot step would otherwise be invisible for the process lifetime. No-op on a
+    # single-profile host; `gateway.multiplex_profiles: false` is retired and no longer skips it.
+    try:
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
+
+        activate_multi_profile_hosting_eagerly()
+    except Exception:
+        _log.warning("eager multi-profile activation failed", exc_info=True)
 
     async def _serve():
         # Split startup from main_loop so we can read the bound port
