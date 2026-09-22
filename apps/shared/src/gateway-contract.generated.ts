@@ -3874,6 +3874,7 @@ export interface PluginsManageResult {
   plugin?: AgentPluginRow | null
   plugin_name?: string | null
   warnings?: string[] | null
+  python_dependencies?: string[] | null
   missing_env?: string[] | null
   python_dependencies?: string[] | null
   after_install_path?: string | null

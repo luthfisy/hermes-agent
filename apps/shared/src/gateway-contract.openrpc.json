@@ -19901,6 +19901,21 @@
             "default": null,
             "title": "Warnings"
           },
+          "python_dependencies": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Python Dependencies"
+          },
           "missing_env": {
             "anyOf": [
               {

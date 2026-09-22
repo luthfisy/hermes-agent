@@ -38,6 +38,7 @@ def test_plugins_manage_install_success():
 
     assert "result" in resp
     assert resp["result"]["plugin_name"] == "hello-world"
+    assert resp["result"]["python_dependencies"] == []
     mock_install.assert_called_once_with(
         "owner/hello-world",
         force=True,
