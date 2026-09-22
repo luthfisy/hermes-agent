@@ -9,6 +9,7 @@ import {
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
+import { assistantTimelineMatch } from '@/lib/chat-messages/reconciliation'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -816,6 +817,38 @@ export function preserveLocalPendingTurnMessages(
 
   const withReplacements =
     replacements.size > 0 ? nextMessages.map(message => replacements.get(message.id) ?? message) : nextMessages
+
+  // A long tool-heavy answer can occupy the entire latest history page (120
+  // source rows), leaving its already-persisted user prompt just outside it.
+  // The warm optimistic prompt has no durable row id. If the page contains its
+  // cached reply, place that prompt at its send-time boundary rather than
+  // appending it *after* the completed reply. An uncommitted new turn has no
+  // matching reply in the page and keeps the ordinary tail behavior.
+  const validTimestamp = (value: number | undefined): value is number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0
+  if (preserved.length === 1 && preserved[0].role === 'user' && validTimestamp(preserved[0].timestamp)) {
+    const prompt = preserved[0]
+    const submittedAt = prompt.timestamp!
+    const localIndex = previousMessages.indexOf(prompt)
+    const localTail = previousMessages.slice(localIndex + 1)
+    const nextLocalUser = localTail.findIndex(message => message.role === 'user')
+    const localReplies = (nextLocalUser < 0 ? localTail : localTail.slice(0, nextLocalUser))
+      .filter(message => message.role === 'assistant')
+    const anchor = withReplacements.findIndex(message =>
+      validTimestamp(message.timestamp) && message.timestamp >= submittedAt
+    )
+
+    if (
+      anchor >= 0 &&
+      !withReplacements.slice(anchor).some(message => message.role === 'user') &&
+      withReplacements.slice(anchor).some(message =>
+        message.role === 'assistant' &&
+        localReplies.some(reply => assistantTimelineMatch(message, reply))
+      )
+    ) {
+      return [...withReplacements.slice(0, anchor), prompt, ...withReplacements.slice(anchor)]
+    }
+  }
 
   return preserved.length ? [...withReplacements, ...preserved] : withReplacements
 }
