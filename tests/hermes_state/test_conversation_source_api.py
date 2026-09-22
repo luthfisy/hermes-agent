@@ -76,6 +76,33 @@ def test_long_lived_writer_prunes_feed_without_index_provider(db, monkeypatch):
     assert db._conn.execute("SELECT COUNT(*) FROM conversation_changes").fetchone()[0] == 3
 
 
+def test_fractional_retention_config_falls_back_to_bounded_default(db, monkeypatch, caplog):
+    import hermes_cli.config
+
+    monkeypatch.setattr(
+        hermes_cli.config,
+        "load_config_readonly",
+        lambda: {"sessions": {"conversation_change_retention_rows": 0.5}},
+    )
+
+    with caplog.at_level("WARNING"):
+        assert db._resolve_conversation_change_retention_rows() == 50_000
+    assert "must be an integer" in caplog.text
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(0, 0), ("0", 0), (17, 17), ("17", 17)])
+def test_retention_config_accepts_only_explicit_integer_values(db, monkeypatch, raw, expected):
+    import hermes_cli.config
+
+    monkeypatch.setattr(
+        hermes_cli.config,
+        "load_config_readonly",
+        lambda: {"sessions": {"conversation_change_retention_rows": raw}},
+    )
+
+    assert db._resolve_conversation_change_retention_rows() == expected
+
+
 def test_configured_zero_disables_feed_retention(db, monkeypatch):
     import hermes_cli.config
 

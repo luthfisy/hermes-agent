@@ -37,16 +37,18 @@ class SessionConversationIndexMixin:
             return default
 
         if isinstance(raw, bool):
+            value = None
+        elif isinstance(raw, int):
+            value = raw
+        elif isinstance(raw, str):
+            text = raw.strip()
+            digits = text[1:] if text[:1] in {"+", "-"} else text
+            value = int(text) if digits.isdigit() and digits else None
+        else:
+            value = None
+        if value is None:
             logger.warning(
-                "sessions.conversation_change_retention_rows=%r is invalid; "
-                "using bounded default %d", raw, default,
-            )
-            return default
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            logger.warning(
-                "sessions.conversation_change_retention_rows=%r is invalid; "
+                "sessions.conversation_change_retention_rows=%r must be an integer; "
                 "using bounded default %d", raw, default,
             )
             return default
