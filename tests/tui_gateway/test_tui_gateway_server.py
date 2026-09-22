@@ -20443,6 +20443,64 @@ class TestResolveRuntimeWithFallback:
         assert resolution.selected_model == "deepseek-v4-pro"
         assert resolution.used_fallback is True
 
+    def test_auth_error_skips_quota_benched_first_fallback(self, monkeypatch):
+        """#119195: pre-agent fallback must keep walking when rung 1 is fully benched."""
+        import time
+
+        from hermes_cli.auth import AuthError
+
+        requested = []
+        codex_runtime = {"provider": "openai-codex", "api_key": "codex-token"}
+        openrouter_runtime = {"provider": "openrouter", "api_key": "or-token"}
+
+        class ExhaustedCodexPool:
+            provider = "openai-codex"
+
+            def has_credentials(self):
+                return True
+
+            def has_available(self, model=None):
+                return False
+
+            def next_available_at(self, model=None):
+                return time.time() + 86_400
+
+        def fake_resolve(**kwargs):
+            provider = kwargs.get("requested")
+            requested.append(provider)
+            if provider == "anthropic":
+                raise AuthError("subscription quota exhausted")
+            if provider == "openai-codex":
+                return codex_runtime
+            if provider == "openrouter":
+                return openrouter_runtime
+            raise AssertionError(provider)
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+        )
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool",
+            lambda provider: ExhaustedCodexPool() if provider == "openai-codex" else None,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [
+                {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+                {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+            ],
+        )
+
+        resolution = server._resolve_runtime_with_fallback(
+            {"requested": "anthropic"}
+        )
+
+        assert requested == ["anthropic", "openai-codex", "openrouter"]
+        assert resolution.runtime == openrouter_runtime
+        assert resolution.selected_model == "deepseek/deepseek-v4-pro"
+        assert resolution.used_fallback is True
+
     def test_quota_auth_error_is_logged_as_rate_limited_not_auth_failed(self, monkeypatch, caplog):
         """#117482 sibling surface: a 429/quota AuthError on the primary reads as quota in the
         gateway's fallback log, never as an auth failure."""
