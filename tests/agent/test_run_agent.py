@@ -6486,7 +6486,7 @@ class TestStreamingApiCall:
         import httpx
         from openai import OpenAI, Stream
         from openai.types.chat import ChatCompletionChunk
-        from agent.chat_completion_helpers import ProviderStreamError
+        from agent.chat_completion_helpers_stream_errors import ProviderStreamError
         from agent.error_classifier import PROVIDER_STREAM_NON_JSON_ERROR_CODE
 
         provider_message = (
@@ -6531,7 +6531,7 @@ class TestStreamingApiCall:
         import httpx
         from openai import OpenAI, Stream
         from openai.types.chat import ChatCompletionChunk
-        from agent.chat_completion_helpers import ProviderStreamError
+        from agent.chat_completion_helpers_stream_errors import ProviderStreamError
 
         secret = "sk-" + ("a" * 48)
         request = httpx.Request(
