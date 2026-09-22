@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from conversation_index import ConversationChangeType
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
 )
@@ -294,6 +295,10 @@ class SessionMaintenanceMixin:
                 conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                for removed_id in chunk:
+                    self._record_conversation_change(
+                        conn, ConversationChangeType.CONVERSATION_DELETE, removed_id,
+                    )
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)

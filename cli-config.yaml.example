@@ -1015,6 +1015,7 @@ group_sessions_per_user: true
 # sessions:
 #   auto_prune: true
 #   retention_days: 90
+#   conversation_change_retention_rows: 50000  # 0 keeps the derived-index feed indefinitely
 #   vacuum_after_prune: true
 #   min_vacuum_interval_days: 30
 #   min_interval_hours: 24

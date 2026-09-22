@@ -1,0 +1,631 @@
+---
+title: "Conversation Index Roadmap"
+description: "Roadmap for asynchronous derived conversation indexing over Hermes-owned canonical transcripts"
+---
+
+# Conversation Index Roadmap
+
+Status: **in progress**
+Last reviewed: **2026-09-21**
+
+This roadmap replaces the canonical-storage direction explored in PR #117813. Hermes keeps one authoritative transcript in its existing core session store. Optional plugins may build rebuildable derived indexes over that transcript, but they do not own conversation persistence, authorization, routing, lifecycle, deletion, backup, or canonical message bodies.
+
+The first intended consumer is Reliquary. The Hermes contract must remain provider-neutral and useful to any derived memory/search/index implementation.
+
+## Target architecture
+
+```text
+CLI / TUI / Desktop / ACP / API / bots / cron
+                       |
+                       v
+             canonical Hermes owner
+             SessionDB / SessionAuthority
+                       |
+          canonical transcript commit
+                 /             \
+                v               v
+       normal Hermes state   durable change feed
+       resume/search/etc.          |
+                                   v
+                         async ConversationIndex
+                                   |
+                      ids / hashes / vectors /
+                      offsets / derived metadata
+                                   |
+                                   v
+                         search -> MessageRef[]
+                                   |
+                                   v
+                       core auth + hydration
+```
+
+The index is a cache/derived database. Losing it must never lose a conversation.
+
+## Governing invariants
+
+1. **Hermes remains canonical.** Message bodies and conversation lifecycle stay owned by the normal Hermes session store.
+2. **Index failure is non-fatal to chat.** Missing, incompatible, offline, corrupt, or slow plugins cannot prevent transcript persistence, resume, rewind, delete, compaction, backup, or core textual search.
+3. **No plugin acknowledgement on the commit path.** A chat turn completes after the canonical Hermes mutation commits; indexing happens afterward.
+4. **No duplicate canonical transcript body in the index.** Durable index state contains references, hashes, offsets, vectors, and provider-specific derived metadata, not a second authoritative copy of message text.
+5. **Change publication is transactional with transcript mutation.** A canonical mutation and the corresponding feed record succeed or fail together in the same SQLite transaction.
+6. **At-least-once feed delivery, idempotent indexing.** Replaying a change sequence is legal and must not duplicate derived state.
+7. **Core authorizes and hydrates.** Plugins return stable message references; Hermes verifies profile/conversation access, visibility, hash, and range before returning source text.
+8. **Core semantics stay core semantics.** Titles, routing, model policy, approvals, billing, archive state, deletion, rewind, compression lineage, and other session invariants are never delegated to the index.
+9. **SQLite default behaviour remains unchanged when no index is configured.** No full-history scans, extra subprocesses, or alternate persistence branches are added to ordinary session operations.
+10. **The design must compose with a single gateway owner.** It must not add client-side persistence paths that conflict with the SessionAuthority direction in #106742.
+
+## Explicit non-goals
+
+This work does **not**:
+
+- replace `SessionDB` or SQLite;
+- implement an alternate canonical conversation store;
+- route ordinary transcript reads/writes through a plugin;
+- move backup ownership to a plugin;
+- require a memory service for chat durability;
+- replace Hermes FTS/session search;
+- make a plugin authoritative for authorization or profile isolation; or
+- make Reliquary-specific types part of Hermes core.
+
+The previous `ConversationStore` ownership design should not be incrementally repaired on this branch.
+
+## Core contracts
+
+### ConversationChange
+
+The feed exposes lightweight durable mutation records. Exact encoding is an implementation detail, but the semantic record needs enough information for an index to determine what must be added, refreshed, invalidated, or rebuilt.
+
+The Phase 0 contract is frozen in
+[Conversation Index Phase 0 Contract](./conversation-index-phase0.md). Its body-free
+event vocabulary is `message_upsert`, `message_state`, `conversation_reconcile`, and
+`conversation_delete`; message state is `active`, `compacted`, or `inactive`.
+
+```python
+@dataclass(frozen=True)
+class ConversationChange:
+    sequence: int
+    change_type: ConversationChangeType
+    conversation_id: str
+    created_at: float
+    message_id: int | None = None
+    content_hash: str | None = None
+    state: MessageIndexState | None = None
+```
+
+`conversation_id` is the physical canonical `sessions.id`; compression-lineage
+composition remains a Hermes responsibility. The feed never contains full message text.
+Bulk lifecycle operations use `conversation_reconcile` rather than enumerating a
+pathological or identity-fragile set of row transitions.
+
+Required event semantics include:
+
+- message append/upsert;
+- content replacement or canonical content change;
+- active/inactive visibility transition;
+- rewind/truncation;
+- compaction visibility/handoff changes;
+- conversation deletion/tombstone; and
+- any later metadata change that materially changes index eligibility.
+
+### MessageReference
+
+Index search returns references, not authoritative content:
+
+```python
+@dataclass(frozen=True)
+class MessageReference:
+    conversation_id: str
+    message_id: int
+    content_hash: str
+    start: int
+    end: int
+    score: float
+    metadata: dict[str, Any]
+```
+
+Hermes owns hydration. A reference is dropped if the message is absent, inactive when the caller requires active history, outside the caller's authorized profile/conversation set, hash-mismatched, or has invalid offsets.
+
+The hash is produced by Hermes over the canonical payload representation used for hydration. Plugins do not define hash identity.
+
+### ConversationIndex
+
+The index contract is deliberately smaller than `MemoryProvider` and much smaller than the retired `ConversationStore` contract.
+
+Candidate capabilities:
+
+```python
+class ConversationIndex(ABC):
+    def is_available(self) -> bool: ...
+
+    def validate_cursor(self, cursor: int) -> None:
+        """Raise ConversationIndexRebuildRequired if durable derived state cannot resume here."""
+
+    def consume_changes(
+        self,
+        changes: Sequence[ConversationChange],
+        *,
+        after_cursor: int,
+    ) -> int:
+        """Durably apply changes and return the last committed sequence."""
+
+    def search(
+        self,
+        query: str,
+        *,
+        conversation_ids: Sequence[str] | None,
+        limit: int,
+    ) -> Sequence[MessageReference]: ...
+
+    def rebuild_from_snapshot(self, snapshot: ConversationSnapshot) -> int:
+        """Atomically install snapshot state and return its exact committed watermark."""
+```
+
+The selected memory plugin may provide a `ConversationIndex` capability, but the interfaces remain separate: turn-time memory behaviour and transcript-derived indexing are different responsibilities.
+
+## Durable change feed
+
+Add a small canonical outbox table beside the transcript state. The initial schema should remain intentionally narrow, for example:
+
+```sql
+CREATE TABLE conversation_changes (
+    sequence         INTEGER PRIMARY KEY AUTOINCREMENT,
+    change_type      TEXT NOT NULL,
+    conversation_id  TEXT NOT NULL,
+    message_id       INTEGER,
+    content_hash     TEXT,
+    state            TEXT,
+    created_at       REAL NOT NULL
+);
+```
+
+The initial feed needs no arbitrary payload column. Conversation-level reconcile/delete
+events carry only the physical conversation ID; message events carry only identity, hash,
+and state.
+
+### Transaction rule
+
+Every transcript mutation that changes index-visible state writes its feed record on the **same connection and in the same transaction** as the canonical mutation.
+
+Do not implement:
+
+```text
+commit transcript
+call plugin
+write feed record
+```
+
+Implement:
+
+```text
+BEGIN
+mutate canonical transcript
+append conversation_changes row(s)
+COMMIT
+
+later:
+async consumer -> plugin
+```
+
+This guarantees that a plugin outage cannot create an unobservable committed transcript mutation.
+
+### Feed retention
+
+The feed is durable and bounded by default; operators may explicitly opt into infinite history.
+
+Core maintenance retains the newest **50,000 sequence positions** by default, configured
+by `sessions.conversation_change_retention_rows`. Retention is owned by Hermes itself,
+not by a plugin cursor: normal state-db housekeeping prunes the feed even when no index
+provider is configured. Long-lived canonical writers also perform an opportunistic sweep
+every 1,000 published changes. With the default bound, that keeps the between-maintenance
+window below 51,000 sequence positions. Setting the configured bound to `0` explicitly
+disables feed pruning and retains the outbox indefinitely. Pruning deletes only old outbox
+rows; SQLite's AUTOINCREMENT high-water mark is preserved.
+
+Core exposes:
+
+- current high-water sequence;
+- oldest retained sequence; and
+- changes after a cursor.
+
+If a plugin cursor predates the retained floor, incremental replay fails explicitly with "rebuild required." The default retention policy is bounded and independent of plugin availability; a dead or unavailable plugin cannot pin core storage. Operators may explicitly set the retention bound to `0` when they prefer unbounded feed history instead of automatic pruning.
+
+## Rebuild protocol
+
+Rebuild is a first-class correctness path, not disaster-only tooling.
+
+Core should be able to create a canonical **snapshot manifest** under one read transaction:
+
+```text
+snapshot_watermark
+conversation_id
+message_id
+content_hash
+active/visibility state
+other index-eligibility metadata
+```
+
+The manifest contains no full transcript copy.
+
+The index then:
+
+1. resets/builds a new derived generation;
+2. hydrates referenced canonical messages in bounded batches;
+3. verifies each hydrated hash against the manifest before indexing it;
+4. atomically installs the rebuilt generation;
+5. records the snapshot watermark; and
+6. replays changes after that watermark.
+
+If a message changes while rebuilding, hash verification may reject the stale manifest entry; the post-watermark feed event supplies the newer state.
+
+## Async ownership and #106742
+
+The correctness of the feed does not depend on #106742 landing: the outbox is generated inside the same canonical `SessionDB` transactions that already own transcript mutations.
+
+Consumer ownership should, however, align with the canonical gateway direction:
+
+- when a gateway/SessionAuthority owns the profile, it owns the live index-consumer loop;
+- clients never write plugin index state independently;
+- managed workers persist through the owner and do not call the index directly;
+- a multiplexed gateway maintains profile-scoped index instances/cursors; and
+- secondary profile failure may degrade that profile's index without redirecting it to another profile.
+
+Until the canonical-owner work lands, any interim consumer host must still enforce one active consumer per profile and must remain off the transcript commit path.
+
+## Search integration
+
+Core `SessionDB.search_messages()` and SQLite FTS remain authoritative first-party transcript search.
+
+Derived index search is additive:
+
+```text
+memory/vector query
+    -> ConversationIndex.search()
+    -> MessageReference[]
+    -> core authorization + hash/range validation
+    -> canonical hydration
+    -> caller
+```
+
+A plugin result cannot smuggle text, broaden profile visibility, reactivate a rewound message, or resurrect a deleted conversation.
+
+## Compaction integration
+
+Reliquary-style semantic compaction is compatible with this architecture, but it is **not part of the index commit path** and should not inflate the first indexing PR.
+
+Later add a separate optional proposal capability, for example:
+
+```python
+@dataclass(frozen=True)
+class CompactionProposal:
+    conversation_id: str
+    source_fingerprint: str
+    summary: str
+    compacted_message_ids: tuple[int, ...]
+    preserved_tail_ids: tuple[int, ...]
+    metadata: dict[str, Any]
+```
+
+Flow:
+
+```text
+Hermes snapshot/fingerprint
+    -> optional semantic compactor
+    -> CompactionProposal
+    -> Hermes validates source fingerprint / active IDs
+    -> Hermes performs its normal canonical compaction transaction
+    -> change feed records resulting visibility/handoff changes
+```
+
+The compactor never closes, rewinds, deletes, or replaces a canonical conversation itself. If unavailable, Hermes keeps its native compaction/fallback behaviour.
+
+# Phase tracker
+
+| Phase | Status | Completion gate |
+| --- | --- | --- |
+| 0. Contract/baseline | Complete | Ownership and event semantics frozen |
+| 1. Transactional feed | Complete | Every target mutation publishes atomically |
+| 2. Source + hydration API | Complete | Stable refs can be safely hydrated |
+| 3. Async index capability | Complete | Plugin outage never blocks chat |
+| 4. Search/reference path | Complete | Derived search cannot bypass core authorization |
+| 5. Rebuild/status | Complete | Lost index rebuilds from canonical state |
+| 6. Canonical-owner acceptance | Complete | Gateway/worker paths produce one canonical row and one derived entry |
+| 7. Semantic compaction proposals | Complete | Optional compactor cannot mutate canonical history directly |
+
+## Phase 0 — Contract and baseline
+
+**Work**
+
+- Inventory canonical message mutations in `hermes_state_messages.py`, compression, and deletion/session lifecycle paths.
+- Define canonical hash input and visibility semantics.
+- Define feed event vocabulary and bulk-operation rules.
+- Decide plugin capability registration without changing existing `MemoryProvider` behaviour.
+- Record existing SQLite performance/behaviour baselines for ordinary chat, resume, FTS search, rewind, compression, backup, and approvals.
+
+**Exit**
+
+Complete. The frozen inventory, physical identity rules, hash boundary, message-state
+semantics, plugin capability decision, and pre-outbox baseline are recorded in
+[Conversation Index Phase 0 Contract](./conversation-index-phase0.md). Every known
+canonical transcript mutation now has either an explicit Phase 1 feed consequence or an
+explicit no-index-visible-change classification.
+
+## Phase 1 — Transactional change feed
+
+**Likely owners**
+
+- `hermes_state_schema.py`
+- `hermes_state_messages.py`
+- `hermes_state_compression.py`
+- `hermes_state_sessions.py`
+- focused tests under `tests/hermes_state/`
+
+**Work**
+
+Add the outbox table and small transaction-local helper(s). Modify canonical mutations only enough to append feed records on the same SQLite transaction.
+
+Do not load plugins or start background workers in this phase.
+
+**Required RED tests first**
+
+1. append commits message + feed row atomically;
+2. injected feed-write failure rolls back the canonical mutation;
+3. rewind/replace/compaction/deletion emit the expected invalidation/tombstone semantics;
+4. default session behaviour is otherwise byte/row compatible where observable; and
+5. feed contains no message body.
+
+**Status: complete.** The body-free `conversation_changes` outbox is created with the canonical
+SQLite schema, and all known canonical transcript mutation paths either append an atomic feed
+record on the same transaction or are explicitly feed-invisible under the Phase 0 contract.
+Focused feed tests cover atomic rollback, append, repair, replace, rewind, both compaction modes,
+content rewrite, import/profile move, deletion, pruning, and empty-session sweeping.
+
+## Phase 2 — Canonical source and hydration API
+
+**Status: complete.** Core now exposes provider-neutral, read-only source surfaces for:
+
+- feed floor/high-water plus bounded `changes-after-cursor` paging;
+- explicit `ConversationFeedGapError` when a cursor predates retained history;
+- profile-scoped physical conversation enumeration;
+- a body-free snapshot manifest captured with its feed watermark in one read transaction; and
+- bounded stable-reference hydration with conversation allowlist, current-state, hash, and range validation.
+
+Snapshot entries contain physical conversation/message IDs, the canonical content hash, index state,
+canonical text length, immutable role, and source timestamp. They do **not** contain message bodies.
+The snapshot includes active and compaction-archived rows but omits ordinary rewind/inactive rows.
+
+Hydration is capped at 256 references per call and runs under one read transaction. Offsets are Python
+character offsets over Hermes' canonical hydration text: strings are unchanged, structured content is
+stable compact JSON with sorted object keys, bytes decode as UTF-8 with replacement, and other scalar
+content uses the same deterministic representation. The content hash remains over the exact SQLite
+storage type + bytes, so storage changes invalidate stale references even when rendered text is equal.
+
+A `SessionDB` file remains the profile boundary. Callers may narrow hydration further with an explicit
+conversation-ID allowlist; Phase 4 will derive that allowlist from the caller's actual search scope.
+The same source APIs work on read-only `SessionDB` handles. No plugin is loaded and no source API writes
+canonical state.
+
+## Phase 3 — ConversationIndex capability and async consumer
+
+**Status: complete.** Derived indexing is a separate optional capability from
+`MemoryProvider`. Packages expose it through the dedicated
+`hermes_agent.conversation_indexes` entry-point group, keyed by the configured
+`memory.provider` name. A package may therefore supply memory recall, conversation
+indexing, both, or neither without coupling their lifecycles.
+
+The `ConversationIndex` contract receives a narrow read-only source facade during
+initialization. The facade exposes only the Phase 2 snapshot, hydration, and physical
+conversation-enumeration APIs; it exposes no transcript mutation methods. Feed batches
+remain body-free, so a provider that needs canonical text hydrates it through this
+facade while processing an upsert.
+
+Runtime ownership is profile-scoped:
+
+- no matching index entry point means no worker thread and no extra `SessionDB` handle;
+- availability is checked before the worker opens its read-only `SessionDB`;
+- the first local bootstrapper takes a non-blocking cross-process profile/index lock;
+- sibling processes remain standby and retry takeover if the owner exits;
+- the profile home/name captured during agent initialization is passed explicitly, so
+  multiplexed gateway profiles cannot drift to the process-global active profile;
+- the worker holds only a read-only `SessionDB`; canonical writes never reference the
+  index or wait for plugin acknowledgement.
+
+Hermes owns the durable consumer cursor under the profile home. A batch is delivered
+at least once: the plugin first durably applies an idempotent prefix and returns the
+last committed feed sequence; Hermes atomically publishes that cursor only afterward.
+A crash between those steps replays the same sequence instead of losing it. Invalid
+provider cursors are rejected without advancement.
+
+Consumer errors and runtime unavailability use bounded exponential backoff. Minimal
+internal status records state, cursor, failure count, retry time, and error class only;
+the richer lag/recovery operator surface remains Phase 5. A cursor older than the feed
+retention floor enters `rebuild_required`; Phase 5 performs the actual manifest rebuild.
+
+Startup is lazy. The configured capability name is remembered with memory configuration,
+but the worker starts only after the owning surface has established the canonical
+`SessionDB` (immediately for a supplied DB, or on the existing lazy DB acquisition
+path). Memory-package recovery/loading completes before an explicitly supplied DB starts
+the index capability.
+
+Existing `MemoryProvider.sync_turn()` is unchanged and remains non-authoritative for
+providers using the change feed. Turn hooks may still support recall/UI behaviour, but
+the async feed is the sole new transcript-derived ingestion path.
+
+## Phase 4 — Search references and hydration
+
+**Status: complete.** Optional derived search now has a distinct core-owned path rather
+than changing Hermes' existing FTS `session_search`. A `ConversationIndexSearchService`
+opens only the current profile's canonical state read-only, initializes the selected
+`ConversationIndex` with the Phase 2 source facade, passes the caller's explicit
+conversation scope only after Hermes intersects it with conversations that actually
+exist in that profile, and accepts only `MessageReference` results.
+
+The plugin never supplies authoritative text. Hermes hydrates every accepted reference
+against canonical state and drops hits that are deleted, rewound/inactive, hash-stale,
+out of range, outside the authorized conversation set, or otherwise malformed. Mixed
+result batches degrade per hit: stale or forged refs do not suppress valid refs. Plugin
+output is bounded before hydration, and index/search failures return no derived hits
+without affecting canonical FTS or chat persistence.
+
+External memory providers receive an optional `conversation_index_search` callable in
+their existing `initialize(..., **kwargs)` context when a conversation-index provider
+name is configured. The callback lazily acquires the canonical profile DB, invokes the
+core search path, and returns only Hermes-authorized/hydrated hits. This gives packages
+such as Reliquary a usable semantic transcript-search seam without extending
+`MemoryProvider` itself or letting provider code hydrate references directly.
+
+Coverage includes:
+
+- deleted messages/conversations;
+- rewound/inactive messages;
+- edited message/hash mismatch;
+- invalid offsets;
+- explicit conversation-scope narrowing;
+- forged cross-profile references;
+- malformed plugin results;
+- mixed valid/stale results where valid refs still hydrate; and
+- unavailable/failing plugin search remaining non-fatal.
+
+## Phase 5 — Rebuild, lag, and operator status
+
+**Status: complete.** Retention gaps, impossible cursors (ahead of canonical high-water),
+startup validation failures, and provider-raised `ConversationIndexRebuildRequired` now
+converge on one canonical rebuild path. After provider initialization Hermes calls
+`validate_cursor(cursor)` once even when the feed is already caught up, so a provider
+whose durable generation was lost or corrupted can request rebuild without waiting for
+an unrelated future transcript mutation. Hermes captures a body-free
+`ConversationSnapshot`, passes it to
+`ConversationIndex.rebuild_from_snapshot()`, and advances the durable Hermes-owned
+cursor only when the provider returns the exact snapshot watermark it atomically
+installed. A failed rebuild leaves `rebuild_required` sticky and retries rebuild rather
+than resuming incremental replay.
+
+Providers hydrate snapshot entries through the existing bounded canonical source facade.
+If a canonical message changes while a provider is rebuilding, stale snapshot references
+fail hash validation and the post-watermark change feed supplies the newer state. Changes
+committed after the snapshot watermark remain visible as lag and are replayed normally
+after rebuild completion.
+
+The operator-safe runtime status now reports configured/available state, feed floor and
+high-water, durable cursor, lag, rebuild-required state, retry/failure state, last error
+class/time, and last recovery time. Status contains no transcript content. Bootstrap and
+unavailable states use the same status contract, while a provider that has not been
+started still reports no runtime status.
+
+The rebuild provider contract is explicit: `rebuild_from_snapshot(snapshot)` must build
+and atomically install the derived generation before returning, and it must return the
+snapshot's exact watermark. Hermes never treats a reset/preparation acknowledgement as a
+successful rebuild.
+
+## Phase 6 — Canonical-owner acceptance
+
+**Status: complete.** Acceptance now binds the conversation-index seam to the landed
+multiplex gateway ownership model rather than the pre-cutover #106742 branch.
+
+The gateway `SessionStore.append_to_transcript()` owner path is exercised against a real
+`SessionDB`, followed by the existing `skip_db=True` non-owning worker/fallback path.
+The acceptance case proves that this combined flow produces exactly one canonical
+message row and one transactional conversation-change record. A separately constructed
+`SessionStore` then resumes the same canonical transcript, demonstrating that another
+surface reads the shared owner state rather than a private transcript copy.
+
+The async `ConversationIndexConsumer` consumes that one real feed record into a fake
+derived provider. Before consumption, the provider has no entry; after one consumer pass,
+it has exactly one entry and one committed feed sequence. A second pass at the same
+durable cursor is a no-op, proving replay does not duplicate derived state. Search then
+runs through `ConversationIndexSearchService`, so the provider returns only its
+`MessageReference` and Hermes authorizes/hydrates the canonical text.
+
+The acceptance invariant is therefore:
+
+```text
+gateway owner admission
+ -> one canonical message
+ -> one transactional feed mutation
+ -> async consumer
+ -> one derived index entry
+ -> Hermes-authorized search hydration
+```
+
+The non-owning worker/fallback path never calls the index and cannot create an additional
+canonical or feed row. Derived indexing remains downstream of canonical ownership rather
+than a second transcript writer.
+
+## Phase 7 — Optional semantic compaction
+
+**Status: complete.** Semantic compaction is a second independent plugin capability,
+separate from both `MemoryProvider` and `ConversationIndex`. Packages expose it through
+the dedicated `hermes_agent.semantic_compactors` entry-point group, keyed by the same
+configured `memory.provider` package name. A package such as Reliquary can therefore ship
+memory, derived indexing, and semantic compaction as three independent capabilities.
+
+The capability runs only after Hermes has acquired the normal compression lease, adopted
+the latest durable parent, and entered the existing summary-dispatch fence. Hermes
+deep-copies that source transcript and computes a stable source fingerprint. The provider
+receives a `SemanticCompactionRequest` containing the physical session/profile identity,
+source fingerprint, source messages, token estimate, optional focus topic, provider memory
+context, and force/manual-compaction flag.
+
+The provider returns a `SemanticCompactionProposal` containing a full replacement
+transcript candidate, the source fingerprint it was derived from, and the index of its
+synthetic summary row. This lets Reliquary choose the semantic summary and retained-tail
+structure rather than merely supplying text to Hermes' native summarizer.
+
+Hermes remains authoritative:
+
+- proposal generation runs under the same cancellation/deadline/attempt fence as native
+  summary generation;
+- Hermes rejects a proposal if the live source changed while it was being produced or if
+  its source fingerprint does not match;
+- provider-supplied persistence/compaction markers are stripped;
+- Hermes alone stamps the declared synthetic summary row with its durable compaction
+  metadata;
+- Hermes runs the existing compaction finalizer, no-progress/anti-growth checks, user-turn
+  preservation, commit fence, and memory extraction;
+- canonical mutation still happens only through the existing `archive_and_compact()` or
+  `publish_compression_child()` paths, including concurrent-tail/watermark handling; and
+- the resulting canonical visibility/handoff changes continue to flow through the
+  transactional conversation-change feed.
+
+If the semantic capability is absent, unavailable, raises, returns `None`, supplies an
+invalid proposal, or races a source change, Hermes immediately falls back to the existing
+native/context-engine compressor. The provider cannot close, rewind, archive, rotate, or
+otherwise mutate the canonical transcript directly.
+
+# Suggested patch sequence
+
+1. `conversation-change-contract` — event/ref/hash types and RED tests.
+2. `conversation-change-outbox` — schema + transaction-local publication.
+3. `conversation-source-hydration` — feed/snapshot/hydration APIs.
+4. `conversation-index-plugin` — capability registration and fake index.
+5. `conversation-index-consumer` — async replay/status.
+6. `conversation-index-search` — ref validation/hydration.
+7. `conversation-index-rebuild` — manifest rebuild and retention-floor recovery.
+8. separate follow-up: semantic compaction proposal capability.
+
+Each patch should remain reviewable independently. Do not repeat the 51-file cross-surface rewrite from #117813.
+
+# Acceptance tests
+
+The architectural-review cases are the minimum acceptance matrix:
+
+1. **Plugin unavailable at startup:** chat persists and resumes; only derived memory/index search is unavailable.
+2. **Plugin dies after canonical commit:** restart/replay yields one transcript row and one index entry.
+3. **Lost/corrupt index:** rebuild produces resolvable references from canonical history.
+4. **Stale reference:** edit/rewind/delete after indexing causes hydration to reject the old ref.
+5. **Profile isolation:** a forged cross-profile result cannot hydrate.
+6. **No duplicate transcript storage:** fixture index persists IDs/hashes/offsets/vectors/metadata but no full message body.
+7. **Canonical-owner composition:** cross-surface use results in one admission, one canonical message, and one derived index entry.
+
+Additional gates:
+
+- default SQLite chat/resume/search/backup performance does not materially regress with no index configured;
+- feed replay survives process restart;
+- compaction emits correct visibility/source changes;
+- bounded retention forces explicit rebuild rather than silent gaps; and
+- all plugin failures are observable but non-fatal to canonical persistence.
+
+# Definition of done
+
+Hermes-side indexing is complete when an optional third-party package can maintain a durable derived conversation index without owning transcript bodies; every index-visible canonical mutation produces a replayable transactional change; a lost index rebuilds from Hermes history; plugin search returns only references that core authorizes and hydrates; plugin failure cannot prevent normal conversation operation; and the design composes with one canonical gateway owner without introducing alternate client persistence paths.
+
+Reliquary-specific ingestion, embeddings, semantic memories, provenance, observations, and compaction policy remain outside Hermes core.

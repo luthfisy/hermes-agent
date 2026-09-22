@@ -7,7 +7,12 @@ ROOT = Path(sys.argv[1]).resolve()
 RECEIPT = Path(sys.argv[2]).resolve()
 HOME = Path(tempfile.mkdtemp(prefix="hermes-104653-state-"))
 # Discard inherited credentials/config, preserve only interpreter essentials.
-keep = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "LC_ALL", "TZ")}
+keep_names = {"PATH", "LANG", "LC_ALL", "TZ"}
+if os.name == "nt":
+    # Windows' Python networking/runtime stack depends on these process-level
+    # system paths even when all application/user state is isolated.
+    keep_names.update({"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP"})
+keep = {k: v for k, v in os.environ.items() if k in keep_names}
 os.environ.clear()
 os.environ.update(keep)
 os.environ.update(
@@ -16,6 +21,11 @@ os.environ.update(
     HERMES_DISABLE_PLUGINS="1",
     NO_PROXY="127.0.0.1,localhost",
 )
+if os.name == "nt":
+    # pathlib.Path.home() uses USERPROFILE on Windows. The probe deliberately
+    # clears inherited environment state, so restore it to the isolated fixture
+    # home rather than leaking the real user profile into the subprocess.
+    os.environ["USERPROFILE"] = str(HOME)
 sys.path.insert(0, str(ROOT))
 os.chdir(HOME)
 (HOME / "config.yaml").write_text(

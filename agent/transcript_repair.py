@@ -27,6 +27,7 @@ def resolve_and_repair_transcript_batch(
     messages: List[Dict[str, Any]],
     encode_content_fn: Callable[[Any], Any],
     decode_content_fn: Callable[[Any], Any],
+    repaired_ids: List[int] | None = None,
 ) -> List[Dict[str, Any]]:
     """Partition a message batch within an active write transaction. An assistant message carrying an
     existing integer ``_row_id`` targets its active SQLite row (or the active clone a watermark compaction
@@ -50,6 +51,8 @@ def resolve_and_repair_transcript_batch(
                 "WHERE id = ? AND session_id = ? AND active = 1",
                 (encode_content_fn(msg.get("content")), target_id, session_id),
             )
+            if repaired_ids is not None:
+                repaired_ids.append(target_id)
         else:
             msg["_canonical_content"] = decoded  # concurrent winner: adopt, don't overwrite
     return inserted_rows

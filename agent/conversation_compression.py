@@ -2974,6 +2974,75 @@ def _resolve_compress_call(
     return compress_fn, compress_kwargs
 
 
+def _select_compression_candidate(
+    agent: Any,
+    messages: list,
+    *,
+    approx_tokens: Optional[int],
+    focus_topic: Optional[str],
+    force: bool,
+    memory_context: str,
+    bypass_cooldown: bool,
+    commit_fence: Optional[CompressionCommitFence],
+    attempt_generation: Any,
+    hard_cancel_event: Any,
+) -> list:
+    """Prefer an optional semantic proposal; otherwise run the native/context-engine compressor."""
+    from agent.semantic_compaction import try_semantic_compaction
+
+    provider_name = getattr(agent, "_semantic_compactor_provider_name", "")
+    provider_name = provider_name.strip() if isinstance(provider_name, str) else ""
+    if provider_name:
+        def _semantic_or_native(source_messages, **_kwargs):
+            semantic = try_semantic_compaction(
+                agent,
+                source_messages,
+                current_tokens=approx_tokens,
+                focus_topic=focus_topic,
+                memory_context=memory_context,
+                force=force,
+            )
+            if semantic is not None:
+                return semantic
+            native_fn, native_kwargs = _resolve_compress_call(
+                agent,
+                approx_tokens=approx_tokens,
+                focus_topic=focus_topic,
+                force=force,
+                memory_context=memory_context,
+                bypass_cooldown=bypass_cooldown,
+            )
+            return native_fn(source_messages, **native_kwargs)
+
+        return _run_summary_dispatch(
+            agent,
+            messages,
+            _semantic_or_native,
+            {},
+            commit_fence=commit_fence,
+            attempt_generation=attempt_generation,
+            hard_cancel_event=hard_cancel_event,
+        )
+
+    compress_fn, compress_kwargs = _resolve_compress_call(
+        agent,
+        approx_tokens=approx_tokens,
+        focus_topic=focus_topic,
+        force=force,
+        memory_context=memory_context,
+        bypass_cooldown=bypass_cooldown,
+    )
+    return _run_summary_dispatch(
+        agent,
+        messages,
+        compress_fn,
+        compress_kwargs,
+        commit_fence=commit_fence,
+        attempt_generation=attempt_generation,
+        hard_cancel_event=hard_cancel_event,
+    )
+
+
 def _run_summary_dispatch(
     agent: Any, messages: list, compress_fn: Callable[..., Any], compress_kwargs: dict[str, Any], *,
     commit_fence: Optional[CompressionCommitFence], attempt_generation: Any, hard_cancel_event: Any,
@@ -3762,17 +3831,21 @@ def _run_summary_phase(
                 # compression flush skips it; run_agent marker sync realigns _session_messages.
                 agent._persist_user_message_idx = len(messages)
         memory_context = _pre_compress_memory_context(agent, messages, checkpoint_required)
-        compress_fn, compress_kwargs = _resolve_compress_call(
-            agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-            bypass_cooldown=bypass_cooldown,
-        )
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
             agent, commit_fence=commit_fence, emit_client_status=lease.status_emitted,
         ).start()
-        compressed = _run_summary_dispatch(
-            agent, messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
-            attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
+        compressed = _select_compression_candidate(
+            agent,
+            messages,
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+            memory_context=memory_context,
+            bypass_cooldown=bypass_cooldown,
+            commit_fence=commit_fence,
+            attempt_generation=attempt.generation,
+            hard_cancel_event=hard_cancel_event,
         )
     except AuxiliaryExplicitCancellation:
         try:

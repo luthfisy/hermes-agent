@@ -168,5 +168,3 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "clarify" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
-
-

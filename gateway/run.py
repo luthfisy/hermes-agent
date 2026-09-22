@@ -4708,10 +4708,11 @@ def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = Non
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
-    if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
-        return
     _adb = acquire()
     try:
+        # Feed retention is core state.db housekeeping, not a session-retention or
+        # provider-health policy. Run it even when both optional session sweeps are off.
+        _adb.prune_conversation_changes()
         if _sess_cfg.get("auto_archive", False):
             _adb.maybe_auto_archive(
                 idle_days=float(_sess_cfg.get("auto_archive_days", 3)),

@@ -45,6 +45,9 @@ from hermes_state_guard import (
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
 from hermes_state_sessions import SessionSessionsMixin
+from hermes_state_conversation_index import SessionConversationIndexMixin
+from hermes_state_conversation_source import SessionConversationSourceMixin
+from hermes_state_conversation_hydration import SessionConversationHydrationMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
@@ -442,6 +445,7 @@ def _foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
 
 class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
+    SessionConversationIndexMixin, SessionConversationSourceMixin, SessionConversationHydrationMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
     SessionMessagesMixin, SessionRewindMixin, SessionProfileRepairMixin,
@@ -538,6 +542,7 @@ class SessionDB(
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
+        self._conversation_change_retention_rows = self._resolve_conversation_change_retention_rows()
         # Keep only the opening call site, never a frame (which pins caller locals).
         self._creation_site = "unknown"
         caller = None
@@ -1064,14 +1069,19 @@ class SessionDB(
             (conn.executemany if many else conn.execute)(sql, params)
         self._execute_write(_do, patience_s=patience_s)
 
+    @staticmethod
+    def _resolved_rowcount(conn, cursor) -> int:
+        """Return affected rows, preserving the SQLite changes() fallback."""
+        rowcount = cursor.rowcount
+        if rowcount is None or rowcount < 0:
+            rowcount = conn.execute("SELECT changes()").fetchone()[0]
+        return int(rowcount)
+
     def _write_rowcount(self, sql: str, params: Any = (), *, patience_s: Optional[float] = None) -> int:
         """Run one UPDATE/DELETE through ``_execute_write``; return rows changed
         (``SELECT changes()`` when the driver reports None / negative)."""
         def _do(conn):
-            rowcount = conn.execute(sql, params).rowcount
-            if rowcount is None or rowcount < 0:
-                rowcount = conn.execute("SELECT changes()").fetchone()[0]
-            return rowcount
+            return self._resolved_rowcount(conn, conn.execute(sql, params))
         return self._execute_write(_do, patience_s=patience_s)
 
     def _read_one(self, sql: str, params: Any = ()) -> Optional[sqlite3.Row]:

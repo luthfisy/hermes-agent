@@ -16,7 +16,7 @@ import time
 import uuid
 from typing import Dict, List, Optional, Sequence
 
-
+from conversation_index import ConversationChangeType
 from hermes_constants import get_hermes_home
 from hermes_startup_watchdog import report_startup_progress
 from utils import safe_json_loads
@@ -962,9 +962,19 @@ class SessionSchemaMixin:
         # the unconditional form blocked every open behind a sibling's write transaction. The
         # probe is short-circuited on the modern NOT NULL column and index-served on legacy
         # ones. Deliberately not INDEXED BY (raises "no query solution" on NOT NULL columns).
-        with contextlib.suppress(sqlite3.OperationalError):
+        affected_sessions: List[str] = []
+        try:
             if cursor.execute("SELECT 1 FROM messages WHERE active IS NULL LIMIT 1").fetchone() is not None:
+                affected_sessions = [row[0] for row in cursor.execute(
+                    "SELECT DISTINCT session_id FROM messages WHERE active IS NULL"
+                ).fetchall()]
                 cursor.execute("UPDATE messages SET active = 1 WHERE active IS NULL")
+        except sqlite3.OperationalError:
+            affected_sessions = []
+        for session_id in affected_sessions:
+            self._record_conversation_change(
+                cursor.connection, ConversationChangeType.CONVERSATION_RECONCILE, session_id,
+            )
 
         fts5_available = self._sqlite_supports_fts5(cursor)
         stale_row = cursor.execute("SELECT 1 FROM state_meta WHERE key = ? LIMIT 1", (FTS_STALE_KEY,)).fetchone()

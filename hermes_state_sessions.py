@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
+from conversation_index import ConversationChangeType
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
@@ -1542,13 +1543,21 @@ class SessionSessionsMixin:
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
             }:
                 return False
-            removed_ids.extend(_delete_delegate_children(conn, [session_id]))
+            delegate_ids = _delete_delegate_children(conn, [session_id])
+            removed_ids.extend(delegate_ids)
+            for removed_id in delegate_ids:
+                self._record_conversation_change(
+                    conn, ConversationChangeType.CONVERSATION_DELETE, removed_id,
+                )
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
             )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
+            self._record_conversation_change(
+                conn, ConversationChangeType.CONVERSATION_DELETE, session_id,
+            )
             removed_ids.append(session_id)
             return True
         deleted = self._execute_write(_do)
@@ -1577,6 +1586,9 @@ class SessionSessionsMixin:
             )
             if cursor.rowcount > 0:
                 self._delete_unreferenced_system_prompts(conn)
+                self._record_conversation_change(
+                    conn, ConversationChangeType.CONVERSATION_DELETE, session_id,
+                )
             return cursor.rowcount > 0
         deleted = self._execute_write(_do)
         if deleted:
@@ -1596,7 +1608,12 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
-            removed_ids.extend(_delete_delegate_children(conn, existing))
+            delegate_ids = _delete_delegate_children(conn, existing)
+            removed_ids.extend(delegate_ids)
+            for removed_id in delegate_ids:
+                self._record_conversation_change(
+                    conn, ConversationChangeType.CONVERSATION_DELETE, removed_id,
+                )
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)
                 conn.execute(  # orphan children whose parent is in the kill list (FK)
@@ -1604,6 +1621,10 @@ class SessionSessionsMixin:
                 )
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                for removed_id in chunk:
+                    self._record_conversation_change(
+                        conn, ConversationChangeType.CONVERSATION_DELETE, removed_id,
+                    )
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(existing)
             return len(existing)
@@ -1642,6 +1663,10 @@ class SessionSessionsMixin:
                 # would otherwise dangle (clean FK state).
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
+                for removed_id in chunk:
+                    self._record_conversation_change(
+                        conn, ConversationChangeType.CONVERSATION_DELETE, removed_id,
+                    )
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)

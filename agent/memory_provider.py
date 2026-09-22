@@ -107,6 +107,9 @@ class MemoryProvider(ABC):
         ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
         "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
         ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
+        Providers may also receive ``conversation_index_search``, a core-owned callable
+        that returns only Hermes-authorized/hydrated transcript hits from their separately
+        registered ConversationIndex capability.
         """
 
     def unavailable_reason(self) -> str:
