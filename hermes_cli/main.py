@@ -2293,6 +2293,11 @@ def cmd_uninstall(args):
     run_uninstall(args)
 
 
+_BYTECODE_CACHE_IGNORED_DIRS = frozenset({
+    ".git", ".venv", ".worktrees", "__pypackages__", "node_modules", "site-packages", "venv",
+})
+
+
 def _clear_bytecode_cache(root: Path) -> int:
     """Remove all __pycache__ dirs under *root* (stale .pyc → ImportError after updates).
 
@@ -2303,7 +2308,7 @@ def _clear_bytecode_cache(root: Path) -> int:
         dirnames[:] = [
             d
             for d in dirnames
-            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
+            if d not in _BYTECODE_CACHE_IGNORED_DIRS
         ]
         if os.path.basename(dirpath) == "__pycache__":
             try:
