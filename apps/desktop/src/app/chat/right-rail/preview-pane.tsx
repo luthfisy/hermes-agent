@@ -34,11 +34,13 @@ import { notify, notifyError } from '@/store/notifications'
 import {
   $browserPages,
   $previewServerRestart,
+  $previewTabs,
   commitBrowserTabLocation,
   failPreviewServerRestart,
   noteBrowserPage,
   popOutBrowserTab,
-  type PreviewTarget
+  type PreviewTarget,
+  setPreviewRenderMode
 } from '@/store/preview'
 import { $selectedStoredSessionId } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
@@ -66,7 +68,7 @@ import {
 } from './preview-console'
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
-import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
@@ -261,6 +263,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
   const previewServerRestart = useStore($previewServerRestart)
+  const previewTabs = useStore($previewTabs)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
@@ -272,6 +275,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
+  const [localRenderMode, setLocalRenderMode] = useState<'preview' | 'source' | undefined>()
   const [annotate, setAnnotate] = useState(emptyAnnotateSession)
   const [draftNote, setDraftNote] = useState('')
   const annotateRef = useRef(annotate)
@@ -279,14 +283,29 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const annotateConversationRef = useRef(selectedStoredSessionId)
   annotateRef.current = annotate
 
+  const liveTarget = (tabId && previewTabs.find(tab => tab.id === tabId)?.target) || target
+  const renderMode = tabId ? liveTarget.renderMode : (localRenderMode ?? target.renderMode)
+  const isHtmlFileTarget = target.kind === 'file' && target.previewKind === 'html'
+
   // Artifacts have no URL to load — they render from the registry, never in a
   // webview.
   const isWebPreview =
-    target.kind !== 'artifact' &&
-    (target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source'))
+    target.kind !== 'artifact' && (target.kind === 'url' || (target.previewKind === 'html' && renderMode !== 'source'))
 
   const isRemoteHtmlTarget =
     target.kind === 'file' && target.previewKind === 'html' && Boolean(target.dataUrl || target.transient)
+
+  // A remote HTML file whose data URL failed validation arrives as a
+  // source-only transient target; it has no rendered path to offer.
+  const canRenderHtmlFile = isHtmlFileTarget && (!isRemoteHtmlTarget || Boolean(target.dataUrl))
+
+  const selectRenderMode = (next: 'preview' | 'source') => {
+    if (tabId) {
+      setPreviewRenderMode(tabId, next)
+    } else {
+      setLocalRenderMode(next)
+    }
+  }
 
   // Hand the live address to storage when this guest is about to go away
   // (pop-out, dock-back, tab close). The other renderer builds from
@@ -309,7 +328,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
   }, [tabId, target.kind])
 
-  const isRemoteHtml = isRemoteHtmlTarget && target.renderMode !== 'source' && Boolean(target.dataUrl)
+  const isRemoteHtml = isRemoteHtmlTarget && renderMode !== 'source' && Boolean(target.dataUrl)
 
   const remoteHtmlDocument = useMemo(
     () => (isRemoteHtml ? remoteHtmlPreviewDocument(target.dataUrl!) : null),
@@ -1317,6 +1336,14 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           </div>
         )}
 
+        {canRenderHtmlFile && renderMode !== 'source' && (
+          <PreviewModeSwitcher
+            active="rendered"
+            modes={['rendered', 'source']}
+            onSelect={mode => selectRenderMode(mode === 'source' ? 'source' : 'preview')}
+          />
+        )}
+
         {isWebPreview && !isRemoteHtml && (
           <PreviewBrowserBar
             annotateMode={annotate.mode}
@@ -1377,7 +1404,11 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             (target.kind === 'artifact' ? (
               <ArtifactPreview target={target} />
             ) : (
-              <LocalFilePreview reloadKey={localReloadKey} target={target} />
+              <LocalFilePreview
+                onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
+                reloadKey={localReloadKey}
+                target={target}
+              />
             ))}
           {isBlankPage && (
             <div className="absolute inset-0 grid bg-background">
