@@ -2636,6 +2636,7 @@ export interface Translations {
       noColor: string
       menuAddFolder: string
       menuSetActive: string
+      menuArchive: string
       menuDelete: string
       moveToProject: string
       movedTo: (name: string) => string
