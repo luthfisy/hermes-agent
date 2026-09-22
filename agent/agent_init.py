@@ -1155,6 +1155,7 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
         enabled=checkpoints_enabled, max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,
         max_file_size_mb=checkpoint_max_file_size_mb,
+        checkpoint_interval=checkpoint_interval,
     )
 
     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
@@ -2338,7 +2339,8 @@ def init_agent(
     iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
-    checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
+    checkpoint_max_file_size_mb: int = 10,
+    checkpoint_interval: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
