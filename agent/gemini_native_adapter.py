@@ -503,10 +503,21 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     return requested
 
 
+def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> Dict[str, Any]:
+    if not isinstance(response_format, dict) or response_format.get("type") not in ("json_object", "json_schema"):
+        return {}
+    spec = response_format.get("json_schema") if response_format.get("type") == "json_schema" else None
+    schema = spec.get("schema") if isinstance(spec, dict) and isinstance(spec.get("schema"), dict) else spec
+    if not isinstance(schema, dict):
+        return {"responseMimeType": "application/json"}
+    key, prep = ("responseJsonSchema", prepare_gemini_tool_parameters) if json_schema else ("responseSchema", sanitize_gemini_tool_parameters)
+    return {"responseMimeType": "application/json", key: prep(schema)}
+
+
 def build_gemini_request(
     *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
-    model: str = "", tools_as_json_schema: bool = False,
+    response_format: Any = None, model: str = "", tools_as_json_schema: bool = False,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
@@ -523,7 +534,10 @@ def build_gemini_request(
         ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config)),
     )
-    request["generationConfig"] = {k: v for k, v in generation if v is not None}
+    request["generationConfig"] = {
+        **{k: v for k, v in generation if v is not None},
+        **_translate_response_format(response_format, json_schema=tools_as_json_schema),
+    }
     return request
 
 
@@ -813,12 +827,14 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
+        top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[Dict[str, Any]] = None,
+        timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
-            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
+            response_format=response_format or extra.get("response_format"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
         model = bare_gemini_model_id(model)

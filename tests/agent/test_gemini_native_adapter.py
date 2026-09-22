@@ -833,3 +833,17 @@ def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
     assert not is_native_gemini_base_url(
         "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
     )
+
+
+def test_build_gemini_request_translates_response_format():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        response_format={"type": "json_schema", "json_schema": {"name": "out", "schema": schema}},
+        tools_as_json_schema=True,
+    )
+    assert req["generationConfig"]["responseMimeType"] == "application/json"
+    assert req["generationConfig"]["responseJsonSchema"] == schema
+
