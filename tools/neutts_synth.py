@@ -26,6 +26,13 @@ def _write_wav(path: str, samples, sample_rate: int = 24000) -> None:
         f.write(b"data" + struct.pack("<I", data_size) + pcm.tobytes())
 
 
+def _format_neutts_import_error(exc) -> str:
+    return (
+        f"Error: neutts import failed ({exc}). If genuinely not installed, "
+        f"run: python -m pip install -U neutts[all]"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="NeuTTS synthesis helper")
     parser.add_argument("--text", required=True, help="Text to synthesize")
@@ -47,8 +54,8 @@ def main():
 
     try:
         from neutts import NeuTTS
-    except ImportError:
-        print("Error: neutts not installed. Run: python -m pip install -U neutts[all]", file=sys.stderr)
+    except ImportError as e:
+        print(_format_neutts_import_error(e), file=sys.stderr)
         sys.exit(1)
 
     # llama_cpp (backbone) offloads to GPU only for the literal string "gpu";
