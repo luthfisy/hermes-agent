@@ -17,6 +17,7 @@ import {
 } from './desktop-plugins-root'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
+import { resolveProfileHermesHome } from './profile-hermes-home'
 
 export interface FsIpcDeps {
   hermesHome: string
@@ -101,7 +102,7 @@ export function registerFsIpc({
   // global root.
   async function localPluginsRoot(dirName: string): Promise<string> {
     const profile = readActiveDesktopProfile()
-    const base = profile && profile !== 'default' ? path.join(hermesHome, 'profiles', profile) : hermesHome
+    const base = resolveProfileHermesHome(hermesHome, profile, 'local')
 
     return ensureDir(path.join(base, dirName))
   }
