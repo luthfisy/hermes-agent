@@ -557,11 +557,25 @@ class TestToolHandlers:
         second_client.arecall.return_value = SimpleNamespace(
             results=[SimpleNamespace(text="Recovered memory")]
         )
-        clients = iter([first_client, second_client])
+        clients = iter([second_client])
 
         provider._mode = "local_embedded"
         provider._client = first_client
-        monkeypatch.setattr(provider, "_get_client", lambda: next(clients))
+        # The retry compares the rebuild to the client it retired; mirror the real
+        # _get_client: first call returns the failing client, the retire call swaps
+        # in the rebuild, and retiring an already-rebuilt client is a no-op.
+        calls = []
+        holder = {"client": first_client}
+
+        def _fake_get_client(*, retire=None):
+            calls.append(retire)
+            if retire is not None and retire is holder["client"] and "next" not in holder:
+                holder["next"] = next(clients)
+                holder["client"] = holder["next"]
+                provider._client = holder["client"]
+            return holder["client"]
+
+        monkeypatch.setattr(provider, "_get_client", _fake_get_client)
 
         result = json.loads(provider.handle_tool_call(
             "hindsight_recall", {"query": "test"}
@@ -1254,6 +1268,356 @@ class TestSessionSwitchBufferFlush:
         # switch time (3 turns accumulated, _turn_index was set to 3
         # by the last sync_turn).
         assert call_order[1] == "3"
+
+
+# ---------------------------------------------------------------------------
+# Prefetch generation fence (#64745: stale/superseded worker must not publish)
+# ---------------------------------------------------------------------------
+
+
+class TestPrefetchGenerationFence:
+    def test_stale_worker_cannot_publish_after_switch_join_timeout(self, provider, monkeypatch):
+        """A prefetch worker can legitimately outlive on_session_switch's 3s
+        join (10s drain + 120s recall). Its late publish lands in the NEW
+        session's slot upstream; the generation fence must drop it, and the
+        new session's first prefetch() must inject nothing of the old one."""
+        import threading
+
+        gate = threading.Event()
+        entered = threading.Event()
+
+        def _gated_recall(query):
+            entered.set()
+            gate.wait(timeout=10.0)
+            return "- old-session memory", 1
+
+        monkeypatch.setattr(provider, "_do_recall", _gated_recall)
+        provider.queue_prefetch("old session query")
+        assert entered.wait(timeout=5.0), "prefetch worker never reached the recall"
+
+        # The worker is still gated when the switch's 3.0s join times out, so
+        # the switch returns with the worker alive — the leaked window upstream.
+        provider.on_session_switch("new-sid")
+        gate.set()
+        provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == ""
+        assert provider.prefetch("anything") == ""
+
+    def test_superseded_worker_cannot_overwrite_newer_result(self, provider, monkeypatch):
+        """Two overlapping workers: the older finishing after the newer must
+        not clobber the newer result sitting in the slot."""
+        import threading
+
+        gate_first = threading.Event()
+
+        def _routed_recall(query):
+            if query == "first query":
+                gate_first.wait(timeout=10.0)
+                return "- first (older) memory", 1
+            return "- second (newer) memory", 1
+
+        monkeypatch.setattr(provider, "_do_recall", _routed_recall)
+
+        provider.queue_prefetch("first query")
+        worker_first = provider._prefetch_thread
+        # Simulate the lost-thread-handle hazard: upstream overwrote
+        # _prefetch_thread freely, so a dead handle lets the next warm spawn.
+        provider._prefetch_thread = None
+        provider.queue_prefetch("second query")
+        worker_second = provider._prefetch_thread
+
+        # The newer worker finishes first and wins the slot.
+        worker_second.join(timeout=5.0)
+        with provider._prefetch_lock:
+            assert provider._prefetch_result == "- second (newer) memory"
+
+        # The older worker finishes LAST; its result must be fenced out.
+        gate_first.set()
+        worker_first.join(timeout=5.0)
+        with provider._prefetch_lock:
+            assert provider._prefetch_result == "- second (newer) memory"
+
+    def test_shutdown_fences_inflight_prefetch_publish(self, provider):
+        """A recall resuming after shutdown() began must not publish, and the
+        fence must prevent a recall against a client shutdown already closed."""
+        import threading
+
+        gate = threading.Event()
+        entered = threading.Event()
+
+        async def _gated_arecall(**kwargs):
+            entered.set()
+            gate.wait(timeout=10.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="late memory")])
+
+        provider._client.arecall = AsyncMock(side_effect=_gated_arecall)
+
+        provider.queue_prefetch("q")
+        assert entered.wait(timeout=5.0), "prefetch worker never reached the recall"
+
+        # Release the recall the moment shutdown starts so shutdown's prefetch
+        # join returns promptly instead of burning its 5s budget.
+        def _release_on_shutdown():
+            provider._shutting_down.wait(timeout=10.0)
+            gate.set()
+
+        threading.Thread(target=_release_on_shutdown, daemon=True).start()
+        provider.shutdown()
+        provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == ""
+        assert provider._client is None
+        assert provider.prefetch("q") == ""
+
+    def test_queue_prefetch_skips_while_prior_worker_running(self, provider):
+        """Rapid turns must warm serially: while one worker runs, further
+        queue_prefetch calls neither spawn nor bump — only ONE recall happens."""
+        import threading
+
+        gate = threading.Event()
+        entered = threading.Event()
+
+        async def _gated_arecall(**kwargs):
+            entered.set()
+            gate.wait(timeout=10.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="m")])
+
+        provider._client.arecall = AsyncMock(side_effect=_gated_arecall)
+
+        provider.queue_prefetch("q1")
+        assert entered.wait(timeout=5.0), "prefetch worker never reached the recall"
+        first = provider._prefetch_thread
+
+        provider.queue_prefetch("q2")
+        provider.queue_prefetch("q3")
+
+        gate.set()
+        first.join(timeout=5.0)
+
+        # The live worker was never replaced and nothing else ever recalled.
+        assert provider._prefetch_thread is first
+        assert provider._client.arecall.await_count == 1
+
+    def test_same_session_boundary_still_publishes(self, provider):
+        """Positive control: with no session switch the fence must be a no-op —
+        an uninterrupted warm → prefetch cycle delivers exactly as upstream."""
+        provider.queue_prefetch("test")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        result = provider.prefetch("test")
+        assert "Memory 1" in result
+        assert "Memory 2" in result
+
+    def test_late_prefetch_for_superseded_session_is_dropped(self, provider):
+        """Compression switches sessions inline, bypassing the manager's serialized
+        boundary task, so a prefetch queued at the previous turn can drain after the
+        rotation. Its recall belongs to a session that no longer owns the slot."""
+        # The previous turn's prefetch, still queued on the memory worker.
+        provider.queue_prefetch("old session query", session_id="parent-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        # The inline switch (compression) rotates the slot's owner.
+        provider.on_session_switch("child-sid", parent_session_id="parent-sid")
+
+        # The queued task now drains: same query, superseded session.
+        provider.queue_prefetch("old session query", session_id="parent-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == ""
+        assert provider.prefetch("child query") == ""
+        # And the recall was never spent on a session nobody will read.
+        assert provider._client.arecall.await_count == 0
+
+    def test_post_switch_prefetch_for_current_session_still_publishes(self, provider):
+        """The session gate must not degenerate into 'drop everything': the new
+        session's own prefetch still warms the slot, and callers without a
+        session id stay unconstrained."""
+        provider.on_session_switch("child-sid", parent_session_id="parent-sid")
+
+        provider.queue_prefetch("child query", session_id="child-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        assert "Memory 1" in provider.prefetch("child query")
+
+        provider.queue_prefetch("child query")  # empty session_id = unconstrained
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        assert "Memory 1" in provider.prefetch("child query")
+
+    def test_sync_turn_revert_cannot_blind_the_session_gate(self, provider):
+        """sync_turn re-stamps _session_id from its kwarg; a queued sync for the
+        previous session lands after an inline switch and un-rotates it. The gate
+        must key off a boundary-owned id, not _session_id."""
+        provider.queue_prefetch("old session query", session_id="parent-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        provider.on_session_switch("child-sid", parent_session_id="parent-sid")
+        # Queued sync_all(parent) drains late and reverts _session_id.
+        provider.sync_turn("x", "y", session_id="parent-sid")
+        assert provider._session_id == "parent-sid"  # the un-rotation is real
+
+        provider.queue_prefetch("old session query", session_id="parent-sid")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == ""
+        assert provider.prefetch("child query") == ""
+
+
+# ---------------------------------------------------------------------------
+# Client lifecycle lock (#11923: concurrent construction must not orphan a client)
+# ---------------------------------------------------------------------------
+
+
+class TestClientLifecycleLock:
+    def test_client_created_once_under_concurrent_first_access(self, provider, monkeypatch):
+        """N threads hitting a cold client cache must construct exactly one: the
+        slow embedded constructor (runtime check, daemon spawn) used to let N-1
+        duplicates through a check-then-act window, each leaked client owning an
+        aiohttp session nothing ever closes."""
+        provider._client = None
+
+        built = []
+
+        def _slow_build():
+            time.sleep(0.2)  # force the check-then-act window open
+            client = SimpleNamespace(name=f"client-{len(built)}")
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(provider, "_new_cloud_client", _slow_build)
+
+        results = []
+
+        def _fetch():
+            results.append(provider._get_client())
+
+        threads = [threading.Thread(target=_fetch, daemon=True) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+
+        assert len(built) == 1
+        assert len(results) == 8
+        assert all(client is built[0] for client in results)
+
+    def test_retry_does_not_orphan_a_sibling_client(self, provider, monkeypatch):
+        """The stale-daemon retry retires _client while sibling threads may sit in
+        _get_client(); without the lock both build and the overwritten client is an
+        orphan nobody closes. Exactly one replacement must ever be constructed."""
+        provider._mode = "local_embedded"
+
+        built = []
+
+        def _build():
+            time.sleep(0.2)  # widen the null-and-rebuild window
+            client = SimpleNamespace()
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(provider, "_new_embedded_client", _build)
+
+        broken = _build()
+        provider._client = broken
+
+        def op(client):
+            async def _attempt():
+                if client is broken:
+                    raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+                return "ok"
+            return _attempt()
+
+        stop = threading.Event()
+
+        def _reader():
+            while not stop.is_set():
+                provider._get_client()
+
+        readers = [threading.Thread(target=_reader, daemon=True) for _ in range(4)]
+        for t in readers:
+            t.start()
+        try:
+            assert provider._run_hindsight_operation(op) == "ok"
+        finally:
+            stop.set()
+            for t in readers:
+                t.join(timeout=5.0)
+
+        assert provider._client is not broken
+        orphans = [c for c in built if c is not broken and c is not provider._client]
+        assert orphans == []
+        assert sum(c is not broken for c in built) == 1
+
+    def test_concurrent_retries_retire_the_broken_client_once(self, provider, monkeypatch):
+        """Two threads failing against the same stale daemon must not evict each
+        other's replacement. Sharing the broken identity through an instance field
+        let the second thread stamp the *first thread's freshly built* client as
+        broken and evict it (orphaning its aiohttp session); passing the identity
+        as an argument keeps stamp-and-retire atomic per thread, so exactly one
+        replacement is built and it wins."""
+        provider._mode = "local_embedded"
+
+        build_gate = threading.Event()
+        built = []
+
+        def _build():
+            build_gate.wait(timeout=5.0)  # park both retries inside the lock window
+            client = SimpleNamespace()
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(provider, "_new_embedded_client", _build)
+
+        broken = SimpleNamespace()
+        provider._client = broken
+
+        def op(client):
+            async def _attempt():
+                if client is broken:
+                    raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+                return "ok"
+            return _attempt()
+
+        barrier = threading.Barrier(2, timeout=5.0)
+
+        def _failer():
+            barrier.wait()  # release both into the failure branch together
+            return provider._run_hindsight_operation(op)
+
+        threads = [threading.Thread(target=_failer, daemon=True) for _ in range(2)]
+        for t in threads:
+            t.start()
+        # Both threads must observe the SAME broken client before either rebuilds.
+        time.sleep(0.2)
+        build_gate.set()
+        for t in threads:
+            t.join(timeout=10.0)
+
+        replacements = [c for c in built if c is not broken]
+        assert len(replacements) == 1, f"built {len(replacements)} replacements"
+        assert provider._client is replacements[0]
+        # The broken client was never re-created: with identity passing, a miss
+        # leaves _client intact rather than handing back a second copy.
+        built.clear()
+
+    def test_shutdown_closes_retired_client_and_allows_rebuild(self, provider, monkeypatch):
+        """shutdown() retires the client before closing it, so a later
+        _get_client() must rebuild rather than hand back the closed object."""
+        retired = provider._client
+        rebuilt = _make_mock_client()
+        monkeypatch.setattr(provider, "_new_cloud_client", lambda: rebuilt)
+
+        provider.shutdown()
+
+        assert retired.aclose.await_count == 1
+        assert provider._client is None
+        assert provider._get_client() is rebuilt
 
 
 # ---------------------------------------------------------------------------
