@@ -2603,6 +2603,7 @@ export const ru = defineLocale({
       removeFolderFailed: 'Не удалось удалить папку',
       menuRestore: 'Restore',
       workspaceArchived: 'Archived',
+      workspaceShared: 'Shared',
       profileLabel: 'Профиль',
       create: 'Создать',
       menu: 'Действия',

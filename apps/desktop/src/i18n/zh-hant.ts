@@ -2341,6 +2341,7 @@ export const zhHant = defineLocale({
       removeFolderFailed: '無法移除資料夾',
       menuRestore: 'Restore',
       workspaceArchived: 'Archived',
+      workspaceShared: 'Shared',
       profileLabel: '設定檔',
       create: '建立',
       menu: '動作',

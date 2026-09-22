@@ -2638,6 +2638,7 @@ export interface Translations {
       removeFolderFailed: string
       menuRestore: string
       workspaceArchived: string
+      workspaceShared: string
       profileLabel: string
       create: string
       menu: string
