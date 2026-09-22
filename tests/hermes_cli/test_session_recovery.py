@@ -935,3 +935,101 @@ def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain
     assert result["range_queries"] < 200
     # Only the rows on the damaged leaf are lost; everything behind it is recovered.
     assert result["copied_rows"] >= 180 - 60
+
+def test_recovery_quarantines_malformed_session_model_config(tmp_path: Path) -> None:
+    """A physically sound output must also survive real session-list JSON reads."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+
+    conn = sqlite3.connect(str(source))
+    try:
+        conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ?",
+            ('{"broken"', "recovery-session-1"),
+        )
+        conn.commit()
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    finally:
+        conn.close()
+    source_hash = _sha256(source)
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    assert _sha256(source) == source_hash
+    assert '{"broken"' not in json.dumps(report)
+    assert report["verified"] is True
+    assert report["complete"] is False
+    assert report["partial"] is True
+    assert report["semantic_cleanup"] == {
+        "malformed_json_values_quarantined": 1,
+        "columns": {"sessions.model_config": 1},
+    }
+    assert any(
+        "quarantined 1 malformed JSON value" in warning
+        for warning in report["verification"]["warnings"]
+    )
+
+    recovered = SessionDB(db_path=output)
+    try:
+        rows = recovered.list_sessions_rich(limit=10)
+        row = recovered.get_session("recovery-session-1")
+    finally:
+        recovered.close()
+
+    assert {item["id"] for item in rows} == {
+        "recovery-session-0",
+        "recovery-session-1",
+        "recovery-session-2",
+    }
+    assert row is not None
+    assert row["model_config"] == "{}"
+
+
+def test_quarantine_malformed_json_joins_an_open_transaction_without_nested_begin(
+    tmp_path: Path,
+) -> None:
+    """#101679: quarantine must join an open destination transaction.
+
+    Lost-and-found mapping copies sessions then messages in one BEGIN. If
+    quarantine issued its own BEGIN IMMEDIATE there, SQLite would raise
+    "cannot start a transaction within a transaction" and the mapper would
+    roll back. The helper must apply in place when ``in_transaction`` is
+    already true, and still open its own transaction on the SQL-copy path.
+    """
+
+    destination = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        destination.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, model_config TEXT)")
+        destination.execute("INSERT INTO sessions VALUES (?, ?)", ("s1", '{"broken'))
+        destination.execute("BEGIN IMMEDIATE")
+        report = session_recovery._quarantine_malformed_json(destination)
+        assert destination.in_transaction is True
+        destination.execute("COMMIT")
+    finally:
+        destination.close()
+
+    assert report == {
+        "malformed_json_values_quarantined": 1,
+        "columns": {"sessions.model_config": 1},
+    }
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+
+    in_transaction_at_entry: list[bool] = []
+    real_quarantine = session_recovery._quarantine_malformed_json
+
+    def spy_quarantine(destination: sqlite3.Connection) -> dict:
+        in_transaction_at_entry.append(destination.in_transaction)
+        return real_quarantine(destination)
+
+    session_recovery._quarantine_malformed_json = spy_quarantine
+    try:
+        recover_session_database(source, output, work_dir=tmp_path)
+    finally:
+        session_recovery._quarantine_malformed_json = real_quarantine
+
+    assert in_transaction_at_entry == [False]
