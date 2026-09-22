@@ -3,9 +3,10 @@
 import json
 import threading
 import time
+from contextvars import ContextVar
 import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager, inject_memory_provider_tools
@@ -25,6 +26,7 @@ class FakeMemoryProvider(MemoryProvider):
         self.initialized = False
         self.synced_turns = []
         self.prefetch_queries = []
+        self.started_prefetches = []
         self.queued_prefetches = []
         self.turn_starts = []
         self.session_end_called = False
@@ -51,6 +53,9 @@ class FakeMemoryProvider(MemoryProvider):
     def prefetch(self, query, *, session_id=""):
         self.prefetch_queries.append(query)
         return self._prefetch_result
+
+    def start_prefetch(self, query, *, session_id="", turn_number=0):
+        self.started_prefetches.append((query, session_id, turn_number))
 
     def queue_prefetch(self, query, *, session_id=""):
         self.queued_prefetches.append(query)
@@ -159,6 +164,128 @@ class TestMemoryManager:
         assert mgr.get_all_tool_schemas() == []
         assert mgr.build_system_prompt() == ""
         assert mgr.prefetch_all("test") == ""
+
+    def test_start_prefetch_all_is_host_nonblocking_and_preserves_context(self):
+        profile = ContextVar("memory_test_profile", default="unset")
+        entered = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        caller_returned = threading.Event()
+
+        class BlockingProvider(FakeMemoryProvider):
+            def start_prefetch(self, query, *, session_id="", turn_number=0):
+                self.started_prefetches.append((query, session_id, turn_number))
+                self.observed_profile = profile.get()
+                entered.set()
+                release.wait(timeout=2.0)
+                finished.set()
+
+        mgr = MemoryManager()
+        provider = BlockingProvider("blocking")
+        mgr.add_provider(provider)
+
+        def _call_manager():
+            profile.set("profile-A")
+            mgr.start_prefetch_all(
+                "current query", session_id="session-1", turn_number=7
+            )
+            caller_returned.set()
+
+        caller = threading.Thread(target=_call_manager)
+        caller.start()
+
+        assert entered.wait(timeout=2.0)
+        assert caller_returned.wait(timeout=2.0)
+        assert not finished.is_set()
+        assert provider.observed_profile == "profile-A"
+        assert provider.started_prefetches == [("current query", "session-1", 7)]
+
+        release.set()
+        assert finished.wait(timeout=2.0)
+        caller.join(timeout=2.0)
+        assert not caller.is_alive()
+
+    def test_start_prefetch_all_runs_latest_pending_identity_and_context(self):
+        profile = ContextVar("memory_pending_profile", default="unset")
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_finished = threading.Event()
+
+        class SequencedProvider(FakeMemoryProvider):
+            def start_prefetch(self, query, *, session_id="", turn_number=0):
+                self.started_prefetches.append(
+                    (query, session_id, turn_number, profile.get())
+                )
+                if query == "first":
+                    first_entered.set()
+                    release_first.wait(timeout=2.0)
+                else:
+                    second_finished.set()
+
+        mgr = MemoryManager()
+        provider = SequencedProvider("sequenced")
+        mgr.add_provider(provider)
+
+        profile.set("profile-A")
+        mgr.start_prefetch_all("first", session_id="old-session", turn_number=1)
+        assert first_entered.wait(timeout=2.0)
+
+        profile.set("profile-B")
+        mgr.start_prefetch_all("second", session_id="new-session", turn_number=2)
+        release_first.set()
+
+        assert second_finished.wait(timeout=2.0)
+        assert provider.started_prefetches == [
+            ("first", "old-session", 1, "profile-A"),
+            ("second", "new-session", 2, "profile-B"),
+        ]
+
+    def test_shutdown_fences_kickoffs_and_skips_live_provider_teardown(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        class BlockingProvider(FakeMemoryProvider):
+            def start_prefetch(self, query, *, session_id="", turn_number=0):
+                self.started_prefetches.append((query, session_id, turn_number))
+                entered.set()
+                release.wait(timeout=2.0)
+
+        mgr = MemoryManager()
+        provider = BlockingProvider("blocking")
+        mgr.add_provider(provider)
+        mgr.start_prefetch_all("first", session_id="session", turn_number=1)
+        assert entered.wait(timeout=2.0)
+
+        with patch("agent.memory_manager._START_PREFETCH_DRAIN_TIMEOUT_S", 0.01):
+            mgr.shutdown_all()
+
+        assert provider.shutdown_called is False
+        mgr.start_prefetch_all("late", session_id="session", turn_number=2)
+        worker = mgr._start_prefetch_threads[provider.name]
+        release.set()
+        worker.join(timeout=2.0)
+        assert provider.started_prefetches == [("first", "session", 1)]
+
+    def test_start_prefetch_thread_start_failure_rolls_back_before_shutdown(self):
+        class UnstartableThread:
+            def start(self):
+                raise RuntimeError("thread capacity exhausted")
+
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("unstartable")
+        mgr.add_provider(provider)
+
+        with patch(
+            "agent.memory_manager.spawn_context_thread",
+            return_value=UnstartableThread(),
+        ):
+            with pytest.raises(RuntimeError, match="thread capacity exhausted"):
+                mgr.start_prefetch_all("query", session_id="session", turn_number=1)
+
+        assert mgr._start_prefetch_threads == {}
+        assert mgr._start_prefetch_pending == {}
+        mgr.shutdown_all()
+        assert provider.shutdown_called is True
 
     def test_add_provider(self):
         mgr = MemoryManager()

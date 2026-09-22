@@ -78,3 +78,57 @@ def test_preflight_gate_skips_small_transcripts():
     est.assert_not_called()
     agent.context_compressor.should_compress.assert_not_called()
     assert out.messages is msgs
+
+
+def test_idle_same_list_compaction_marks_memory_invalidated():
+    msgs = [
+        {"role": "assistant", "content": "old"},
+        {"role": "user", "content": "current"},
+    ]
+    compressor = SimpleNamespace(
+        protect_first_n=0,
+        protect_last_n=0,
+        threshold_tokens=10_000,
+        context_length=20_000,
+        summary_target_ratio=0.5,
+        last_compression_rough_tokens=0,
+        awaiting_real_usage_after_compression=False,
+        get_active_compression_failure_cooldown=lambda: None,
+        should_compress=lambda _tokens: False,
+    )
+    agent = _agent(
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=1,
+        _last_activity_ts=0,
+        context_compressor=compressor,
+        _emit_status=MagicMock(),
+    )
+
+    def _compress(messages, *_args, **_kwargs):
+        messages[0]["content"] = "compacted"
+        agent._last_compaction_in_place = True
+        return messages, "sys"
+
+    agent._compress_context = _compress
+    with patch("agent.turn_context._preflight_request_tokens", return_value=9_000), patch(
+        "agent.turn_context._should_idle_compact", return_value=True
+    ), patch(
+        "agent.turn_context.reanchor_current_turn_user_idx", return_value=1
+    ), patch(
+        "agent.turn_context_compaction.conversation_history_after_compression",
+        return_value=None,
+    ):
+        out = run_turn_start_compaction(
+            agent,
+            messages=msgs,
+            system_message=None,
+            active_system_prompt="sys",
+            conversation_history=None,
+            current_turn_user_idx=1,
+            user_message="current",
+            effective_task_id="t",
+        )
+
+    assert out.messages is msgs
+    assert out.memory_invalidated is True
+    assert out.current_turn_user_idx == 1

@@ -33,6 +33,8 @@ class CompactionOutcome:
     current_turn_user_idx: int
     # A preflight pass (threshold or engine-driven) actually rebuilt ``messages``.
     compressed: bool = False
+    # Any committed transcript boundary, including same-list idle compaction.
+    memory_invalidated: bool = False
     # Preflight proved an immediate retry ineffective (no progress / insufficient).
     blocked: bool = False
 
@@ -204,9 +206,13 @@ def _idle_compaction(
     out.messages, out.active_system_prompt = agent._compress_context(
         messages, system_message, approx_tokens=_idle_tokens, task_id=effective_task_id
     )
-    # ``_compress_context`` returns the INPUT list object when it skips; only
-    # re-baseline and re-anchor after a real compaction.
-    if out.messages is not messages:
+    # Most skip paths return the input list. Legacy/plugin engines may instead
+    # compact that list in place; the committed boundary flag is authoritative.
+    out.memory_invalidated = (
+        out.messages is not messages
+        or bool(getattr(agent, "_last_compaction_in_place", False))
+    )
+    if out.memory_invalidated:
         out.conversation_history = conversation_history_after_compression(
             agent, out.messages, out.conversation_history
         )

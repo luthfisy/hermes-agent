@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
@@ -29,6 +30,7 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # shutdown_all() drain bound; workers are daemon threads so a wedged provider never
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+_START_PREFETCH_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 
 
@@ -352,6 +354,9 @@ class MemoryManager:
         self._external_prefetch_timeout = timeout
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._external_prefetch_lock = threading.Lock()
+        self._start_prefetch_threads: Dict[str, threading.Thread] = {}
+        self._start_prefetch_pending: Dict[str, Callable[[], None]] = {}
+        self._start_prefetch_lock = threading.Lock()
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
@@ -453,6 +458,65 @@ class MemoryManager:
             "prefetch failed (non-fatal)", lambda p: self._prefetch_provider(p, clean_query, session_id=session_id),
         )
         return "\n\n".join(p for p in parts if p and p.strip())
+
+    def start_prefetch_all(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        turn_number: int = 0,
+    ) -> None:
+        """Kick off current-turn prefetch without running provider code on the turn thread."""
+        clean_query = self._strip_skill_scaffolding(query)
+        if not clean_query:
+            return
+
+        for provider in list(self._providers):
+            operation = ctx_bound(
+                lambda current=provider: current.start_prefetch(
+                    clean_query,
+                    session_id=session_id,
+                    turn_number=turn_number,
+                )
+            )
+            with self._start_prefetch_lock:
+                if self._shutting_down:
+                    return
+                self._start_prefetch_pending[provider.name] = operation
+                existing = self._start_prefetch_threads.get(provider.name)
+                if existing is not None and existing.is_alive():
+                    continue
+
+                def _run(current: MemoryProvider = provider) -> None:
+                    while True:
+                        with self._start_prefetch_lock:
+                            pending = self._start_prefetch_pending.pop(
+                                current.name, None
+                            )
+                            if pending is None:
+                                self._start_prefetch_threads.pop(current.name, None)
+                                return
+                        try:
+                            pending()
+                        except Exception:
+                            logger.warning(
+                                "Memory provider '%s' start_prefetch failed (non-fatal)",
+                                current.name,
+                                exc_info=True,
+                            )
+
+                thread = spawn_context_thread(
+                    _run,
+                    name=f"memory-start-prefetch-{provider.name}",
+                )
+                self._start_prefetch_threads[provider.name] = thread
+                try:
+                    thread.start()
+                except Exception:
+                    if self._start_prefetch_threads.get(provider.name) is thread:
+                        self._start_prefetch_threads.pop(provider.name, None)
+                    self._start_prefetch_pending.pop(provider.name, None)
+                    raise
 
     def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> str:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
@@ -835,8 +899,28 @@ class MemoryManager:
     def shutdown_all(self) -> None:
         """Drain the background executor (bounded), then shut providers down in reverse order."""
         self._drain_sync_executor()
+        blocked = self._drain_start_prefetch_threads()
         self._each_provider("shutdown failed", lambda p: p.shutdown(), level=logging.WARNING,
-                            providers=self._providers[::-1])
+                            providers=[p for p in self._providers[::-1] if p.name not in blocked])
+
+    def _drain_start_prefetch_threads(self) -> set[str]:
+        """Fence new kickoffs and avoid tearing down a provider under its live callback."""
+        with self._start_prefetch_lock:
+            self._shutting_down = True
+            self._start_prefetch_pending.clear()
+            threads = dict(self._start_prefetch_threads)
+        deadline = time.monotonic() + _START_PREFETCH_DRAIN_TIMEOUT_S
+        for thread in threads.values():
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        blocked = {name for name, thread in threads.items() if thread.is_alive()}
+        for name in sorted(blocked):
+            logger.warning(
+                "Memory provider '%s' start_prefetch did not stop within %.1fs; "
+                "skipping concurrent provider shutdown",
+                name,
+                _START_PREFETCH_DRAIN_TIMEOUT_S,
+            )
+        return blocked
 
     @property
     def shutdown_drain_state(self) -> Dict[str, Any]:

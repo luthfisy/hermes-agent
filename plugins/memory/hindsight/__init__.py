@@ -22,9 +22,9 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
-from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
+from agent.memory_provider import MemoryProvider, RecallStatus, ctx_bound, spawn_context_thread
 from agent.secret_scope import UnscopedSecretError, get_secret
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_home
@@ -50,6 +50,20 @@ logger = logging.getLogger(__name__)
 
 _LOCAL_MODES = {"local", "local_embedded"}
 _RETAIN_CONTEXT_DEFAULT = "conversation between Hermes Agent and the User"
+
+
+class _ReadyRecall(NamedTuple):
+    session_id: str
+    turn_number: int
+    query: str
+    result: tuple[str, int]
+
+
+class _RecallRequest(NamedTuple):
+    session_id: str
+    turn_number: int
+    query: str
+    operation: Callable[[], tuple[str, int]]
 
 
 def _ensure_client_dependency() -> None:
@@ -367,6 +381,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result, self._prefetch_count = "", 0
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        self._opportunistic_ready: list[_ReadyRecall] = []
+        self._opportunistic_generation = 0
+        self._opportunistic_inflight: _RecallRequest | None = None
+        self._opportunistic_pending: _RecallRequest | None = None
+        self._opportunistic_retired_sessions: set[str] = set()
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
 
@@ -443,6 +462,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_types", "description": "Fact types to surface on recall — applies to both auto-recall and the hindsight_recall tool (comma-separated or list). Defaults to observation-only — observations are Hindsight's consolidated, deduplicated, evidence-grounded knowledge layer; raw world/experience facts are the supporting evidence observations already summarize. Set to e.g. 'observation,world,experience' to also include raw facts.", "default": "observation"},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "recall_sync", "description": "Recall synchronously against the current message before each turn (higher relevance, adds recall latency to the turn). Default off: recall runs in the background and is injected on the next turn.", "default": False},
+            {"key": "recall_async", "description": "Start current-query recall early and inject it only when ready without waiting; late results carry to the next turn. recall_sync takes precedence.", "default": False},
             {"key": "recall_indicator", "description": "Show a '👁️ Hindsight — recalled N memories' status line when auto-recall injects memory (turn off for customer-facing agents)", "default": True},
             {"key": "retain_indicator", "description": "Show a '👁️ Hindsight — saving to memory…' status line when a turn is saved to memory (turn off for customer-facing agents)", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
@@ -788,6 +808,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_tags_match = cfg.get("recall_tags_match", "any")
         self._auto_recall = cfg.get("auto_recall", True)
         self._recall_sync = bool(cfg.get("recall_sync", False))
+        self._recall_async = bool(cfg.get("recall_async", False))
         self._recall_max_tokens = int(cfg.get("recall_max_tokens", 4096))
         self._recall_max_input_chars = int(cfg.get("recall_max_input_chars", 800))
         # None -> observation-only (Hindsight's consolidated, deduplicated layer; raw
@@ -945,12 +966,105 @@ class HindsightMemoryProvider(MemoryProvider):
         # See NousResearch/hermes-agent#5820.
         if self._recall_sync:
             return self._finish_prefetch(*(("", 0) if self._recall_disabled() else self._do_recall(query)))
+        if self._recall_async:
+            active_session = str(session_id or self._session_id or "")
+            with self._prefetch_lock:
+                current_idx = next(
+                    (
+                        idx
+                        for idx in range(len(self._opportunistic_ready) - 1, -1, -1)
+                        if self._opportunistic_ready[idx].session_id == active_session
+                        and self._opportunistic_ready[idx].query == query
+                    ),
+                    None,
+                )
+                fallback_idx = next(
+                    (
+                        idx
+                        for idx, ready in enumerate(self._opportunistic_ready)
+                        if ready.session_id == active_session
+                    ),
+                    None,
+                )
+                if current_idx is not None:
+                    ready = self._opportunistic_ready[current_idx]
+                    self._opportunistic_ready = [
+                        item
+                        for item in self._opportunistic_ready
+                        if item.session_id != active_session
+                    ]
+                else:
+                    ready = (
+                        self._opportunistic_ready.pop(fallback_idx)
+                        if fallback_idx is not None
+                        else None
+                    )
+            return self._finish_prefetch(*(ready.result if ready else ("", 0)))
         # Default: the background worker's result for the previous turn (capped join).
         self._join_prefetch(3.0, log=True)
         with self._prefetch_lock:
             result, count = self._prefetch_result, self._prefetch_count
             self._prefetch_result, self._prefetch_count = "", 0
         return self._finish_prefetch(result, count)
+
+    def start_prefetch(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        turn_number: int = 0,
+    ) -> None:
+        """Start an opt-in current-turn recall without delaying the turn."""
+        if self._recall_sync or not self._recall_async or self._recall_disabled():
+            return
+        request = _RecallRequest(
+            str(session_id or self._session_id or ""),
+            int(turn_number),
+            query,
+            ctx_bound(lambda: self._do_recall(query)),
+        )
+        key = request[:3]
+
+        def _run() -> None:
+            active_request = request
+            active_generation = generation
+            while active_request is not None:
+                recalled = active_request.operation()
+                with self._prefetch_lock:
+                    current_generation = self._opportunistic_generation
+                    if active_generation == current_generation and recalled[0]:
+                        self._opportunistic_ready.append(
+                            _ReadyRecall(*active_request[:3], recalled)
+                        )
+                    active_request = self._opportunistic_pending
+                    self._opportunistic_pending = None
+                    self._opportunistic_inflight = active_request
+                    active_generation = current_generation
+
+        with self._prefetch_lock:
+            if request.session_id in self._opportunistic_retired_sessions:
+                return
+            if (
+                self._opportunistic_inflight is not None
+                and self._opportunistic_inflight[:3] == key
+            ) or any(
+                (ready.session_id, ready.turn_number, ready.query) == key
+                for ready in self._opportunistic_ready
+            ):
+                return
+            if self._opportunistic_inflight is not None:
+                self._opportunistic_pending = request
+                return
+            generation = self._opportunistic_generation
+            worker = spawn_context_thread(_run, name="hindsight-prefetch")
+            self._opportunistic_inflight = request
+            self._prefetch_thread = worker
+            try:
+                worker.start()
+            except Exception:
+                self._opportunistic_inflight = None
+                self._prefetch_thread = None
+                raise
 
     def recall_status(self) -> Optional[RecallStatus]:
         """Count injected by the last prefetch; None if nothing injected or ``recall_indicator=false``."""
@@ -960,7 +1074,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         # Sync mode recalls live each turn — nothing to prime in the background.
-        if self._recall_sync or self._recall_disabled():
+        if self._recall_sync or self._recall_async or self._recall_disabled():
             return
 
         def _run():
@@ -1190,10 +1304,50 @@ class HindsightMemoryProvider(MemoryProvider):
             if not self._shutting_down.is_set():
                 self._enqueue_retain(_flush)
 
-        # 2. Drain the old session's in-flight prefetch and drop its result.
-        self._join_prefetch(3.0)
+        # 2. Legacy warm prefetch is bounded here. Opportunistic recall must not
+        # delay the turn; generation invalidation below makes its live result stale.
+        if not bool(getattr(self, "_recall_async", False)):
+            self._join_prefetch(3.0)
         with self._prefetch_lock:
+            retired_sessions = getattr(
+                self, "_opportunistic_retired_sessions", set()
+            )
+            if new_id != self._session_id:
+                if self._session_id:
+                    retired_sessions.add(self._session_id)
+                retired_sessions.discard(new_id)
+            self._opportunistic_retired_sessions = retired_sessions
             self._prefetch_result = ""
+            self._prefetch_count = 0
+            prefetch_alive = bool(
+                self._prefetch_thread and self._prefetch_thread.is_alive()
+            )
+            if new_id == self._session_id:
+                retry_key = (
+                    self._opportunistic_pending or self._opportunistic_inflight
+                    if prefetch_alive and kwargs.get("reason") == "compression"
+                    else None
+                )
+                self._opportunistic_generation += 1
+                self._opportunistic_ready.clear()
+                self._opportunistic_pending = retry_key
+            else:
+                self._opportunistic_ready = [
+                    item for item in self._opportunistic_ready
+                    if item.session_id == new_id
+                ]
+                if (
+                    self._opportunistic_pending is not None
+                    and self._opportunistic_pending[0] != new_id
+                ):
+                    self._opportunistic_pending = None
+                if (
+                    self._opportunistic_inflight is not None
+                    and self._opportunistic_inflight[0] != new_id
+                ):
+                    self._opportunistic_generation += 1
+            if not prefetch_alive:
+                self._opportunistic_inflight = None
 
         # 3. Rotate to the new session.
         if parent_session_id:
@@ -1223,6 +1377,10 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
         # Stop accepting retain jobs first so late sync_turn() calls are dropped.
         self._shutting_down.set()
+        with self._prefetch_lock:
+            self._opportunistic_generation += 1
+            self._opportunistic_ready.clear()
+            self._opportunistic_pending = None
         # The writer finishes in-flight work then exits on the sentinel; the
         # bounded join keeps shutdown predictable even if the daemon is wedged.
         if (writer := self._writer_thread) is not None and writer.is_alive():
@@ -1232,6 +1390,11 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.warning("Hindsight writer did not stop within 10s; abandoning %d pending retain(s)",
                                self._retain_queue.qsize())
         self._join_prefetch(5.0)
+        with self._prefetch_lock:
+            self._opportunistic_ready.clear()
+            self._opportunistic_pending = None
+            if not (self._prefetch_thread and self._prefetch_thread.is_alive()):
+                self._opportunistic_inflight = None
         if self._client is not None:
             with contextlib.suppress(Exception):
                 self._close_client()
