@@ -1928,8 +1928,17 @@ class TestBotNameResolution(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestProcessingReactions(unittest.TestCase):
-    """Typing on start → removed on SUCCESS, swapped for CrossMark on FAILURE,
-    removed (no replacement) on CANCELLED."""
+    """Typing on start → removed on SUCCESS, swapped for CrossMark on FAILURE.
+
+    The badge rides on the newest message WE sent in the chat, never on the inbound
+    message: Feishu pushes a notification to the AUTHOR of a reacted message, so
+    badging the user's own message buzzes them on every turn while badging ours only
+    reaches the app. No outbound message yet → no badge at all (we never fall back
+    to the inbound message, which would buzz the user).
+    """
+
+    CHAT_ID = "oc_chat"
+    OUTBOUND_ID = "om_bot"
 
     @staticmethod
     def _run(coro):
@@ -1940,6 +1949,7 @@ class TestProcessingReactions(unittest.TestCase):
         create_success: bool = True,
         delete_success: bool = True,
         next_reaction_id: str = "r1",
+        outbound_message_id=OUTBOUND_ID,
     ):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -1948,6 +1958,8 @@ class TestProcessingReactions(unittest.TestCase):
         tracker = SimpleNamespace(
             create_calls=[],
             delete_calls=[],
+            create_targets=[],
+            delete_targets=[],
             next_reaction_id=next_reaction_id,
             create_success=create_success,
             delete_success=delete_success,
@@ -1957,6 +1969,7 @@ class TestProcessingReactions(unittest.TestCase):
             tracker.create_calls.append(
                 request.request_body.reaction_type["emoji_type"]
             )
+            tracker.create_targets.append(request.message_id)
             if tracker.create_success:
                 return SimpleNamespace(
                     success=lambda: True,
@@ -1968,6 +1981,7 @@ class TestProcessingReactions(unittest.TestCase):
 
         def _delete(request):
             tracker.delete_calls.append(request.reaction_id)
+            tracker.delete_targets.append(request.message_id)
             return SimpleNamespace(
                 success=lambda: tracker.delete_success,
                 code=0 if tracker.delete_success else 99,
@@ -1981,11 +1995,13 @@ class TestProcessingReactions(unittest.TestCase):
                 ),
             ),
         )
+        if outbound_message_id:
+            adapter._outbound_message_by_chat[self.CHAT_ID] = outbound_message_id
         return adapter, tracker
 
-    @staticmethod
-    def _event(message_id: str = "om_msg"):
-        return SimpleNamespace(message_id=message_id)
+    @classmethod
+    def _event(cls, message_id: str = "om_msg", chat_id: str = CHAT_ID):
+        return SimpleNamespace(message_id=message_id, source=SimpleNamespace(chat_id=chat_id))
 
     def _patch_to_thread(self):
         async def _direct(func, *args, **kwargs):
@@ -1995,29 +2011,42 @@ class TestProcessingReactions(unittest.TestCase):
 
     # ------------------------------------------------------------------ start
     @patch.dict(os.environ, {}, clear=True)
-    def test_start_adds_typing_and_caches_reaction_id(self):
+    def test_start_badges_our_own_message_not_the_inbound_one(self):
         adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
         with self._patch_to_thread():
             self._run(adapter.on_processing_start(self._event()))
         self.assertEqual(tracker.create_calls, ["Typing"])
-        self.assertEqual(adapter._pending_processing_reactions["om_msg"], "r_typing")
+        self.assertEqual(tracker.create_targets, [self.OUTBOUND_ID])
+        self.assertEqual(
+            adapter._pending_processing_reactions["om_msg"],
+            (self.OUTBOUND_ID, "r_typing"),
+        )
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_start_without_any_outbound_message_adds_nothing(self):
+        # First turn after a restart: nothing of ours has been sent yet. Stay silent
+        # rather than badge the inbound message, which would ping the user.
+        adapter, tracker = self._build_adapter(outbound_message_id=None)
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+        self.assertEqual(tracker.create_calls, [])
+        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
 
     # --------------------------------------------------------------- complete
     @patch.dict(os.environ, {}, clear=True)
-    def test_success_removes_typing_and_adds_nothing(self):
+    def test_success_removes_typing_from_our_message(self):
         adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
         with self._patch_to_thread():
             self._run(adapter.on_processing_start(self._event()))
             self._run(
                 adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
             )
-        self.assertEqual(tracker.create_calls, ["Typing"])
         self.assertEqual(tracker.delete_calls, ["r_typing"])
+        self.assertEqual(tracker.delete_targets, [self.OUTBOUND_ID])
         self.assertNotIn("om_msg", adapter._pending_processing_reactions)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_failure_removes_typing_then_adds_cross_mark(self):
+    def test_failure_swaps_typing_for_cross_mark_on_our_message(self):
         adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
         with self._patch_to_thread():
             self._run(adapter.on_processing_start(self._event()))
@@ -2025,8 +2054,8 @@ class TestProcessingReactions(unittest.TestCase):
                 adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
             )
         self.assertEqual(tracker.create_calls, ["Typing", "CrossMark"])
-        self.assertEqual(tracker.delete_calls, ["r_typing"])
-
+        self.assertEqual(tracker.create_targets, [self.OUTBOUND_ID, self.OUTBOUND_ID])
+        self.assertEqual(tracker.delete_targets, [self.OUTBOUND_ID])
 
     # ------------------------- delete failure: don't stack badges -----------
     @patch.dict(os.environ, {}, clear=True)
@@ -2045,13 +2074,66 @@ class TestProcessingReactions(unittest.TestCase):
         self.assertEqual(tracker.create_calls, ["Typing"])  # CrossMark NOT added
         self.assertEqual(tracker.delete_calls, ["r_typing"])  # delete was attempted
         self.assertEqual(
-            adapter._pending_processing_reactions["om_msg"], "r_typing",
+            adapter._pending_processing_reactions["om_msg"],
+            (self.OUTBOUND_ID, "r_typing"),
         )  # handle retained
 
+    # ------------------------------------------- send path feeds the target
+    @patch.dict(os.environ, {}, clear=True)
+    def test_sending_records_the_message_so_the_next_turn_badges_it(self):
+        adapter, tracker = self._build_adapter(outbound_message_id=None)
 
-    # ------------------------------------------------------------- env toggle
+        def _send(request):
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(message_id="om_sent"),
+            )
 
-    # ------------------------------------------------------------- LRU bounds
+        # Keep the reaction client from _build_adapter; only the message sender changes.
+        adapter._client.im.v1.message = SimpleNamespace(create=_send, reply=_send)
+        with self._patch_to_thread():
+            self._run(
+                adapter._send_raw_message(
+                    chat_id=self.CHAT_ID,
+                    msg_type="text",
+                    payload='{"text": "hi"}',
+                    reply_to=None,
+                    metadata=None,
+                )
+            )
+            self._run(adapter.on_processing_start(self._event()))
+        self.assertEqual(adapter._outbound_message_by_chat[self.CHAT_ID], "om_sent")
+        self.assertEqual(tracker.create_targets, ["om_sent"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_bookkeeping_failure_never_breaks_the_send(self):
+        """The tracker runs inside the send path: a bug there must not surface to the caller as a
+        failed send (the message is already on the wire, so a retry would duplicate it)."""
+        adapter, _tracker = self._build_adapter(outbound_message_id=None)
+
+        def _send(request):
+            return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_sent"))
+
+        adapter._client.im.v1.message = SimpleNamespace(create=_send, reply=_send)
+
+        def _boom(response, field_name):
+            raise RuntimeError("bookkeeping bug")
+
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        with patch.object(FeishuAdapter, "_extract_response_field", staticmethod(_boom)):
+            with self._patch_to_thread():
+                response = self._run(
+                    adapter._send_raw_message(
+                        chat_id=self.CHAT_ID,
+                        msg_type="text",
+                        payload='{"text": "hi"}',
+                        reply_to=None,
+                        metadata=None,
+                    )
+                )
+        self.assertTrue(response.success())  # send result untouched
+        self.assertNotIn(self.CHAT_ID, adapter._outbound_message_by_chat)
 
 
 class TestFeishuMentionMap(unittest.TestCase):
