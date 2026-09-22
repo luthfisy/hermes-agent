@@ -130,7 +130,8 @@ export const en: Translations = {
       managedUnavailable: 'Managed apps are not available for this account yet.',
       writeFailed: 'That change was not saved.',
       refreshFailed: 'The tool list was not refreshed.',
-      disconnectNoAccount: 'Hermes has no account to disconnect here. Refresh the page and try again.'
+      disconnectNoAccount: 'Hermes has no account to disconnect here. Refresh the page and try again.',
+      disconnectRefused: 'Nous could not remove this sign-in right now. Turn the app off with the switch instead, or try again later.'
     },
 
     add: {
@@ -176,7 +177,8 @@ export const en: Translations = {
       removeServerTitle: (name: string) => `Remove ${name}?`,
       removeServerBody: 'The entry leaves mcp.json on this computer. Nothing else is deleted.',
       appSwitch: (name: string) => `Hermes can use ${name}`,
-      waysTitle: (name: string) => `How Hermes reaches ${name}`,
+      waysTitle: (name: string) => `Where ${name} runs`,
+      wayNotConnected: (name: string) => `Not connected yet. Sign in to ${name} in your browser.`,
       wayHosted: 'Managed',
       bothOn: (name: string) => `Both are on, so Hermes sees every ${name} tool twice.`,
       turnOffLocal: 'Turn off the local server',
@@ -815,7 +817,7 @@ export const en: Translations = {
       blurb:
         'Extend this app, not an agent — installed once for the whole app, whichever profile, gateway, or machine you connect to. Bundled or dropped into the desktop-plugins folder; toggles apply live.',
       count: n => `${n} installed`,
-      openFolder: 'Open plugins folder',
+      openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
       enable: 'Enable',
@@ -2059,6 +2061,15 @@ export const en: Translations = {
       toggleFailed: (name: string) => `Could not toggle ${name}`,
       legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
       portableBadge: 'portable',
+      serverStates: {
+        connected: 'connected',
+        app_not_running: 'app not running',
+        endpoint_unavailable: 'endpoint unavailable',
+        no_interactive_session: 'no interactive session',
+        version_too_old: 'version too old',
+        missing_app: 'app missing',
+        unknown: 'status unknown'
+      },
       catalogTitle: 'Plugin catalog',
       catalogBrowse: 'Browse',
       catalogHide: 'Hide the catalog browser',

@@ -180,6 +180,7 @@ export interface Translations {
       writeFailed: string
       refreshFailed: string
       disconnectNoAccount: string
+      disconnectRefused: string
     }
     add: {
       action: string
@@ -224,6 +225,7 @@ export interface Translations {
       removeServerBody: string
       appSwitch: (name: string) => string
       waysTitle: (name: string) => string
+      wayNotConnected: (name: string) => string
       wayHosted: string
       bothOn: (name: string) => string
       turnOffLocal: string
@@ -1764,6 +1766,15 @@ export interface Translations {
       toggleFailed: (name: string) => string
       legacyBackend: string
       portableBadge: string
+      serverStates: {
+        connected: string
+        app_not_running: string
+        endpoint_unavailable: string
+        no_interactive_session: string
+        version_too_old: string
+        missing_app: string
+        unknown: string
+      }
       catalogTitle: string
       catalogBrowse: string
       catalogHide: string
