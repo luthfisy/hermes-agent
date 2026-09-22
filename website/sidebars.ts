@@ -799,6 +799,8 @@ const sidebars: SidebarsConfig = {
             'developer-guide/completion-backlog-delivery',
             'developer-guide/session-storage',
             'developer-guide/state-db-recovery',
+            'developer-guide/state-store-architecture',
+            'developer-guide/state-store-postgresql-rollback',
             'developer-guide/provider-runtime',
             'developer-guide/programmatic-integration',
           ],
