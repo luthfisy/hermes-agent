@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import types
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -30,6 +31,22 @@ from hermes_cli import update_cmd
 from hermes_cli.update_cmd import _finish_dashboard_update_cleanup
 from hermes_cli.main_dashboard import _restart_managed_dashboard_service
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes as _warn_stale_dashboard_processes
+
+
+def test_dashboard_import_tolerates_stale_cli_output_without_line_input(monkeypatch):
+    """Post-update imports must not bind a helper absent from a cached old module."""
+    import hermes_cli
+
+    original_dashboard = sys.modules["hermes_cli.main_dashboard"]
+    stale_cli_output = types.ModuleType("hermes_cli.cli_output")
+    with monkeypatch.context() as isolated:
+        isolated.setitem(sys.modules, "hermes_cli.cli_output", stale_cli_output)
+        isolated.delitem(sys.modules, "hermes_cli.main_dashboard")
+        isolated.delattr(hermes_cli, "main_dashboard", raising=False)
+        imported = importlib.import_module("hermes_cli.main_dashboard")
+        assert callable(imported._line_input)
+    sys.modules["hermes_cli.main_dashboard"] = original_dashboard
+    hermes_cli.main_dashboard = original_dashboard
 
 
 @pytest.fixture(autouse=True)
