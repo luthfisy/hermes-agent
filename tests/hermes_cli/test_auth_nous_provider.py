@@ -1118,6 +1118,25 @@ class TestNousDeviceAuthTimeoutMessage:
         msg = _nous_device_auth_timeout_message("")
         assert f"{DEFAULT_NOUS_PORTAL_URL.rstrip('/')}/login" in msg
 
+    def test_timeout_message_surfaces_elapsed_state(self):
+        """#98682: the timeout must say how long the flow waited, not just that it gave up."""
+        from hermes_cli.auth import _nous_device_auth_timeout_message
+
+        msg = _nous_device_auth_timeout_message("https://portal.nousresearch.com", expires_in=600)
+        assert "expired after 600s" in msg
+        # The actionable guidance must survive alongside the elapsed state.
+        assert "CAPTCHA" in msg
+        assert "hermes portal" in msg
+        assert "https://portal.nousresearch.com/login" in msg
+
+    def test_timeout_message_omits_elapsed_when_unknown(self):
+        """No expires_in (e.g. a caller without the device-code response) -> no fabricated number."""
+        from hermes_cli.auth import _nous_device_auth_timeout_message
+
+        msg = _nous_device_auth_timeout_message("https://portal.nousresearch.com")
+        assert "expired after" not in msg
+        assert "CAPTCHA" in msg
+
 
 def test_poll_for_token_timeout_raises_actionable_message():
     """The poll deadline must raise the CAPTCHA-aware guidance at the SOURCE,
@@ -1153,6 +1172,8 @@ def test_poll_for_token_timeout_raises_actionable_message():
     assert "CAPTCHA" in msg
     assert "hermes portal" in msg
     assert "https://portal.nousresearch.com/login" in msg
+    # #98682: the elapsed state rides the same message (expires_in=1 above).
+    assert "expired after 1s" in msg
 
 
 def test_nous_device_code_login_timeout_raises_actionable_message(monkeypatch):
