@@ -2255,6 +2255,16 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
                 if fb_api_key := resolve_entry_api_key(entry):
                     fb_kwargs["explicit_api_key"] = fb_api_key
                 runtime = resolve_runtime_provider(**fb_kwargs)
+                from agent.fallback_cooldown import candidate_pool_exhausted
+                if candidate_pool_exhausted(
+                    fb_provider, fb_model, pool=runtime.get("credential_pool")
+                ):
+                    logging.getLogger(__name__).warning(
+                        "Fallback skip: %s/%s credential pool is exhausted "
+                        "(every entry in cooldown)",
+                        fb_provider, fb_model,
+                    )
+                    continue
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
@@ -2306,6 +2316,14 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         primary_provider = requested_provider or (_load_cfg().get("model") or {}).get("provider")
         resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
             primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
+        # A gateway agent may live for hours after this startup-only fallback. Preserve the
+        # configured primary intent so the cached agent can re-resolve it on a later turn instead
+        # of treating the fallback runtime as its permanent primary (#119195).
+        resolution.runtime["_pre_agent_primary"] = {
+            "model": model,
+            "resolve_kwargs": dict(resolve_kwargs),
+            "overrides": {k: v for k, v in overrides.items() if v},
+        }
         return resolution.selected_model, resolution.runtime
     if resolution.runtime.get("source") == "local-runtime":
         # Live supervisor beat any persisted loopback URL for this identity.
@@ -2396,6 +2414,7 @@ def _make_agent(
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
+    pre_agent_primary = runtime.pop("_pre_agent_primary", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
@@ -2431,6 +2450,26 @@ def _make_agent(
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
+    if isinstance(pre_agent_primary, dict):
+        # The fallback was selected before AIAgent existed, so its normal primary snapshot points
+        # at the fallback. Mark it as an active fallback and retain the original resolution intent;
+        # restore_primary_runtime() will retry that intent at turn boundaries until it succeeds.
+        agent._pre_agent_primary = pre_agent_primary
+        agent._fallback_activated = True
+        agent._provider_fallback_active = True
+        selected_provider = str(
+            getattr(agent, "provider", runtime.get("provider")) or runtime.get("provider") or ""
+        ).strip().lower()
+        selected_model = str(getattr(agent, "model", model) or model or "").strip()
+        agent._provider_fallback_route = (selected_model, selected_provider)
+        # Continue *after* the fallback chosen during pre-resolution if it later fails in-turn.
+        for idx, entry in enumerate(getattr(agent, "_fallback_chain", []) or []):
+            if (
+                str(entry.get("provider") or "").strip().lower() == selected_provider
+                and str(entry.get("model") or "").strip() == selected_model
+            ):
+                agent._fallback_index = idx + 1
+                break
     return agent
 
 
