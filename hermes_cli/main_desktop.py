@@ -20,7 +20,7 @@ import tempfile
 import time as _time_mod
 
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional, Sequence
 from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
 from hermes_platform.host import facts
 from hermes_cli.main_tui_launch import _npm_lifecycle_env
@@ -1649,6 +1649,91 @@ def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     return launch_command
 
 
+# KDE/Wayland: KWin's wp_color_manager_v1 rejects the sRGB image descriptions Chromium
+# submits (``wayland_wp_color_manager.cc`` "Unable to set image transfer function" /
+# "Failed to populate image description for color space"), so Chromium renders the window
+# through its fallback path — oversaturated or darkened colours on HDR and wide-gamut
+# outputs, re-broken whenever the window moves between monitors or a dim/suspend cycle
+# changes the output (brave-browser#52093, Signal-Desktop#7728, Electron 40/Chromium 144).
+# Chromium's own colour handling is correct, so Desktop opts out of the compositor protocol.
+_WAYLAND_COLOR_MANAGEMENT_FEATURE = "WaylandWpColorManagerV1"
+
+
+def _flags_force_x11_backend(flags: Sequence[str]) -> bool:
+    """True when ``flags`` explicitly select Chromium's X11 ozone backend."""
+    for index, flag in enumerate(flags):
+        if flag.startswith("--ozone-platform=x11") or flag.startswith("--ozone-platform-hint=x11"):
+            return True
+        if flag in ("--ozone-platform", "--ozone-platform-hint") and index + 1 < len(flags):
+            if flags[index + 1].strip() == "x11":
+                return True
+    return False
+
+
+def _session_is_kde(env: Mapping[str, str]) -> bool:
+    """True when the session's desktop is KDE, from the markers KDE itself exports.
+
+    ``KDE_FULL_SESSION`` / ``KDE_SESSION_VERSION`` are Plasma's own; the freedesktop
+    ``XDG_CURRENT_DESKTOP`` and ``XDG_SESSION_DESKTOP`` are set by the session starter and
+    are matched case-insensitively.
+    """
+    if str(env.get("KDE_FULL_SESSION", "")).strip() or str(env.get("KDE_SESSION_VERSION", "")).strip():
+        return True
+    for key in ("XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP"):
+        if "kde" in str(env.get(key, "")).strip().lower():
+            return True
+    return False
+
+
+def _wayland_color_management_fixup(
+    launch_command: Sequence[str],
+    *,
+    child_env: Optional[Mapping[str, str]] = None,
+    user_flags: Sequence[str] = (),
+    platform: Optional[str] = None,
+) -> list[str]:
+    """``launch_command`` plus Chromium's Wayland colour-management opt-out, where it applies.
+
+    Skipped when the Wayland backend is not in play — not Linux, not a Wayland session, or
+    an explicit X11 backend (``ELECTRON_OZONE_PLATFORM_HINT=x11``, ``--ozone-platform=x11``)
+    — and when the command already names the feature, which is how a user whose compositor
+    does implement ``wp_color_manager_v1`` correctly opts back in.
+
+    KDE-only: the failure is KWin's ``wp_color_manager_v1`` rejecting Chromium's image
+    descriptions, so compositors that get the protocol right (GNOME, Sway, …) keep their
+    colour management. On KDE the same ``--enable-features=WaylandWpColorManagerV1``
+    still opts back in.
+    """
+    if platform is None:
+        platform = sys.platform
+    if not platform.startswith("linux"):
+        return list(launch_command)
+    env = os.environ if child_env is None else child_env
+    wayland_session = (
+        str(env.get("XDG_SESSION_TYPE", "")).strip().lower() == "wayland"
+        or bool(str(env.get("WAYLAND_DISPLAY", "")).strip())
+    )
+    if not wayland_session:
+        return list(launch_command)
+    if not _session_is_kde(env):
+        return list(launch_command)
+    if str(env.get("ELECTRON_OZONE_PLATFORM_HINT", "")).strip().lower() == "x11":
+        return list(launch_command)
+    combined = [*launch_command, *user_flags]
+    if _flags_force_x11_backend(combined):
+        return list(launch_command)
+    if any(_WAYLAND_COLOR_MANAGEMENT_FEATURE in flag for flag in combined):
+        return list(launch_command)
+
+    fixup = f"--disable-features={_WAYLAND_COLOR_MANAGEMENT_FEATURE}"
+    for index, flag in enumerate(launch_command):
+        if flag.startswith("--disable-features="):
+            requested = flag.split("=", 1)[1].strip()
+            merged = f"--disable-features={requested},{_WAYLAND_COLOR_MANAGEMENT_FEATURE}" if requested else fixup
+            return [*launch_command[:index], merged, *launch_command[index + 1:]]
+    return [*launch_command, fixup]
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1737,6 +1822,9 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         launch_command = _packaged_desktop_launch_command(packaged_executable)
         launch_command.extend(config_electron_flags)
+    launch_command = _wayland_color_management_fixup(
+        launch_command, child_env=env, user_flags=config_electron_flags
+    )
     if getattr(args, "local", False):
         launch_command.append("--local")
     if not source_mode:
