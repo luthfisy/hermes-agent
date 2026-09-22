@@ -1,0 +1,24 @@
+name: tamahermes
+repo: https://github.com/ahrazzle/TamaHermes
+subdir: plugins/tamahermes
+sha: 5e0e7ae416b0be325c52b57c560a6e8a508831bb
+description: Grow a local TamaHermes pet from real Hermes agent activity.
+maintainer: ahrazzle
+tier: community
+category: general
+requires_hermes: ">=0.21"
+docs_url: https://github.com/ahrazzle/TamaHermes
+version: "1.2.1"
+readme: true
+platforms:
+  - macos
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - post_tool_call
+    - post_api_request
+    - on_session_end
+  provides_middleware: []
+  requires_env: []
