@@ -70,7 +70,7 @@ import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { recycleOwnedBackend } from './backend-recycle'
+import { recycleOwnedBackend, recyclePinnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
@@ -134,9 +134,12 @@ import {
   profileSshOverride,
   type RegistryBackendRequestScope,
   resolveAuthMode,
+  resolveLegacyApiConnection,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
+  resolveSettingsProfileConnection,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
@@ -15448,10 +15451,14 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const id = String(connectionId || '').trim() || registry.primary
   const spawnPriority = spawnPriorityFrom(priority)
 
-  return connectDesktopProfileRoute(
-    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
-    spawnPriority
-  )
+  const resolve = (targetProfile: string) =>
+    connectDesktopProfileRoute({ connectionId: id, profile: targetProfile }, spawnPriority)
+
+  const targetProfile = String(profile ?? '').trim() || 'default'
+
+  return payload && Object.hasOwn(payload, 'expectedOwner')
+    ? resolveSettingsProfileConnection(targetProfile, payload.expectedOwner, resolve)
+    : resolve(targetProfile)
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -15746,6 +15753,26 @@ const hudIpc = registerHudIpc({
 })
 
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+  if (profile && typeof profile === 'object') {
+    const primaryProfile = primaryProfileKey()
+    const config = readDesktopConnectionConfig()
+    await recyclePinnedBackend(profile, {
+      registry: readDesktopConnectionsRegistry(),
+      routeOptions: profileRouteOptions(profile.profile),
+      primarySshKey: profileSshOverride(config, primaryProfile) ? sshScopeKey(primaryProfile) : sshScopeKey(null),
+      effectiveSshFingerprint: source => effectiveSshConfigFingerprint(managedSshConfig(source, profile.profile)),
+      primaryPromise: () => backendConnectionState.getPromise(),
+      pool: backendPool,
+      sshState: key => sshConnections.get(key),
+      teardownSsh: key => teardownSshConnection(key),
+      teardownPool: stopPoolBackend,
+      teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+      notifyApplied: sendConnectionApplied
+    })
+
+    return { ok: true }
+  }
+
   // Models-page recovery after a code-skew 503 (#97046): kill the owned
   // SSH serve (if any) before the local child so reconnect cannot reuse a
   // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
@@ -17184,11 +17211,13 @@ async function dispatchRegistryApiRequest(
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
 
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
-      )
+  const connection: any = await resolveRegistryApiConnection(request, registryConnectionId, () =>
+    request?.passive
+      ? ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
+      : backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
+          ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
+        )
+  )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
@@ -17279,8 +17308,7 @@ async function handleHermesApiRequest(request) {
   let connection
 
   try {
-    connection = await ensureBackend(routeProfile, {
-      passive: request?.passive,
+    connection = await resolveLegacyApiConnection(request, routeProfile, ensureBackend, {
       request: { method: request?.method, path: request?.path },
       spawnPriority
     })
