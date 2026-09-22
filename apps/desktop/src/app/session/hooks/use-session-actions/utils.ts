@@ -872,7 +872,11 @@ type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
-export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
+export function appendLiveSessionProjection(
+  messages: ChatMessage[],
+  projection: LiveSessionProjection,
+  previousMessages: ChatMessage[] = []
+): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
   const inflightStreaming = Boolean(projection.inflight?.streaming)
@@ -915,6 +919,32 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
+  // A long running turn can fill the latest history page entirely with its
+  // assistant/tool rows. Its persisted user row then falls outside the page,
+  // even though the warm cache still knows the send boundary. Restore that
+  // cached prompt ahead of the newer rows; do not create a second inflight
+  // bubble at the tail. A page from BEFORE a newly accepted prompt has older
+  // timestamps and must retain the normal append behavior.
+  const cachedPrompt = previousMessages.findLast(message =>
+    message.role === 'user' &&
+    message.id.startsWith('user-') &&
+    textWithoutReferenceLines(chatMessageText(message)).trim() === textWithoutReferenceLines(inflightUser).trim()
+  )
+  const trailing = cachedPrompt ? previousMessages.slice(previousMessages.indexOf(cachedPrompt) + 1) : []
+  const anchorOmittedPrompt = Boolean(
+    inflightUser &&
+    cachedPrompt &&
+    typeof cachedPrompt.timestamp === 'number' &&
+    messages.length &&
+    !messages.some(message => message.role === 'user') &&
+    typeof messages[0].timestamp === 'number' &&
+    messages[0].timestamp >= cachedPrompt.timestamp &&
+    messages.some(message => message.role === 'assistant') &&
+    !trailing.some(message => message.role === 'user' || (message.role === 'assistant' && !isLiveTailRow(message)))
+  )
+  if (anchorOmittedPrompt && cachedPrompt) {
+    messages = [cachedPrompt, ...messages]
+  }
   // A turn normally persists its user row before inference begins. session.resume
   // then returns that stored row *and* the still-live inflight projection; adding
   // both makes a backgrounded prompt appear twice when its session is reopened.
@@ -950,7 +980,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     )
 
   const inflightUserAlreadyPersisted =
-    projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
+    anchorOmittedPrompt || projection[safelyPersistedInflightUser] === true ||
+    (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
     // A synthetic starting prompt (process_complete, hidden, …) carries the

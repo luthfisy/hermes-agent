@@ -912,6 +912,17 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(reconcileDurableHistory(withPrompt, result).filter(message => message.role === 'user')).toHaveLength(1)
   })
 
+  it('does not move an accepted but not-yet-persisted prompt ahead of an older page', () => {
+    const prompt = msg('user-new', 'user', 'new question', { timestamp: 200 })
+    const page = [msg('old-reply', 'assistant', 'earlier answer', { timestamp: 100 })]
+    const projected = appendLiveSessionProjection(page, {
+      session_id: 'runtime-1',
+      inflight: { user: 'new question', streaming: true }
+    }, [prompt])
+
+    expect(projected.map(message => message.id)).toEqual(['old-reply', 'user-inflight-runtime-1', 'assistant-stream-runtime-1'])
+  })
+
   it('does not anchor an uncommitted prompt to an older identical reply', () => {
     const previous = [
       msg('user-optimistic', 'user', 'new question', { timestamp: 100 }),
