@@ -2679,8 +2679,11 @@ class GatewayTurnMixin:
         return _run_still_current
 
     @staticmethod
-    def _proxy_error_result(text: str) -> Dict[str, Any]:
-        return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
+    def _agent_error_result(text: str) -> Dict[str, Any]:
+        return {
+            "final_response": text, "messages": [], "api_calls": 0, "tools": [],
+            "failed": True, "completed": False, "error": text,
+        }
 
     def _proxy_stream_consumer(self, source: "SessionSource", event_message_id, _thread_metadata, _run_still_current):
         """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""
@@ -2730,11 +2733,11 @@ class GatewayTurnMixin:
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
-            return self._proxy_error_result("⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp")
+            return self._agent_error_result("⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp")
 
         proxy_url = self._get_proxy_url()
         if not proxy_url:
-            return self._proxy_error_result("⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)")
+            return self._agent_error_result("⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)")
 
         # The proxy key is a per-profile credential: honor the installed secret scope under multiplex.
         # Only UnscopedSecretError / import failures fall back to the env; any other get_secret()
@@ -2825,7 +2828,7 @@ class GatewayTurnMixin:
                     if resp.status != 200:
                         error_text = await resp.text()
                         logger.warning("Proxy error (%d) from %s: %s", resp.status, proxy_url, error_text[:500])
-                        return self._proxy_error_result(f"⚠️ Proxy error ({resp.status}): {error_text[:300]}")
+                        return self._agent_error_result(f"⚠️ Proxy error ({resp.status}): {error_text[:300]}")
 
                     buffer = ""
                     async for chunk in resp.content.iter_any():
@@ -2863,7 +2866,7 @@ class GatewayTurnMixin:
         except Exception as e:
             logger.error("Proxy connection error to %s: %s", proxy_url, e)
             if not full_response:
-                return self._proxy_error_result(f"⚠️ Proxy connection error: {e}")
+                return self._agent_error_result(f"⚠️ Proxy connection error: {e}")
             # Partial response — return what we got
         finally:
             if _stream_consumer:
@@ -3003,6 +3006,9 @@ class GatewayTurnMixin:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
+        native_cot_mode = resolve_display_setting(user_config, platform_key, "cot_messages", "off")
+        if not hasattr(adapter, "start_native_cot"):
+            native_cot_mode = "off"
         return self._RunAgentDisplay(
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
@@ -3013,6 +3019,7 @@ class GatewayTurnMixin:
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
+            native_cot_mode=native_cot_mode,
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
             _generic_status_phrase=_generic_status_phrase,
         )
@@ -3023,6 +3030,7 @@ class GatewayTurnMixin:
         "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
+        "native_cot_mode",
     )
 
     def _run_agent_build_turn_context(
@@ -3073,7 +3081,7 @@ class GatewayTurnMixin:
         turn_ctx.progress_callback = turn_runner.progress_callback
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
         turn_ctx.native_tool_start_callback = turn_runner.combined_tool_start_callback
-        turn_ctx.native_tool_complete_callback = turn_runner.native_tool_complete_callback
+        turn_ctx.native_tool_complete_callback = turn_runner.combined_tool_complete_callback
         return turn_ctx, turn_runner, _cleanup_adapter
 
     def _thread_metadata_for_progress(
@@ -4233,9 +4241,30 @@ class GatewayTurnMixin:
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
         )
+        response = None
+        try:
+            await turn_runner.start_native_cot()
+            if self._get_proxy_url():
+                response = await self._run_agent_via_proxy(
+                    message=message, context_prompt=context_prompt, history=history, source=source,
+                    session_id=session_id, session_key=session_key, run_generation=run_generation,
+                    event_message_id=event_message_id,
+                )
+            else:
+                response = await self._run_agent_local_turn(
+                    disp, turn_ctx, turn_runner, _cleanup_adapter, message_type,
+                    scheduled_heartbeat=scheduled_heartbeat,
+                )
+            return response
+        finally:
+            await turn_runner.finish_native_cot(response)
+
+    async def _run_agent_local_turn(self, disp, turn_ctx, turn_runner, _cleanup_adapter, message_type, scheduled_heartbeat: bool = False):
+        source, session_key = turn_ctx.source, turn_ctx.session_key
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
-            turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
+            turn_ctx, turn_runner, source, turn_ctx.event_message_id, disp._native_slack_task_cards,
         )
+        await turn_runner.start_native_cot()
         # Two independent quiet reasons: a muted diagnostic wake (ours) and a scheduled heartbeat.
         if not (scheduled_heartbeat or turn_ctx.mute_notification_reply):
             self._run_agent_start_streaming_tts(
@@ -4266,6 +4295,8 @@ class GatewayTurnMixin:
             if isinstance(response, dict):
                 response["_notification_reply_muted"] = turn_ctx.mute_notification_reply
             self._run_agent_evict_on_fallback(turn_ctx)
+
+            await turn_runner.finish_native_cot(response)
 
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]
