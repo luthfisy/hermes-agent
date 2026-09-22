@@ -21,6 +21,7 @@ import {
   isSubmitEnter,
   Loader,
   LogView,
+  stripAnsi,
   Textarea,
   Tip,
   useMutation,
@@ -946,7 +947,7 @@ export function TaskDrawer({
             {log?.exists && log.content && (
               <Section label={log.truncated ? k.workerLogTail : k.workerLog}>
                 <ScrollFade deps={log.content.length} max="12rem">
-                  <LogView className="border-0 px-0">{log.content}</LogView>
+                  <LogView className="border-0 px-0">{stripAnsi(log.content)}</LogView>
                 </ScrollFade>
               </Section>
             )}
