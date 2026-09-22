@@ -52,6 +52,19 @@ _LOCAL_MODES = {"local", "local_embedded"}
 _RETAIN_CONTEXT_DEFAULT = "conversation between Hermes Agent and the User"
 
 
+def _parse_bool_setting(value: Any, default: bool) -> bool:
+    """Parse boolean config values without treating ``"false"`` as true."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def _ensure_client_dependency() -> None:
     """Lazily install the Hindsight client (``tools.lazy_deps``) before importing it."""
     try:
@@ -369,6 +382,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = None
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
+        self._decay_enabled = False
+        self._decay_store = None
+        self._decay_error_logged = False
 
     @property
     def name(self) -> str:
@@ -454,6 +470,13 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
+            {"key": "decay_enabled", "description": "Apply LivingMemory-style soft importance decay to recall results", "default": False, "type": "boolean"},
+            {"key": "decay_rate_per_day", "description": "Importance points lost per day when a memory is not recently accessed", "default": 0.01, "type": "number", "minimum": 0, "maximum": 1},
+            {"key": "decay_access_window_days", "description": "Days after access during which decay is reduced by half", "default": 30, "type": "integer", "minimum": 0},
+            {"key": "decay_initial_importance", "description": "Initial importance assigned to a newly observed Hindsight result", "default": 0.5, "type": "number", "minimum": 0, "maximum": 1},
+            {"key": "decay_min_importance", "description": "Minimum importance for a sufficiently old result to remain in recall", "default": 0.2, "type": "number", "minimum": 0, "maximum": 1},
+            {"key": "decay_cleanup_age_days", "description": "Minimum age before a low-importance result is omitted from recall", "default": 60, "type": "integer", "minimum": 0},
+            {"key": "decay_exempt_tags", "description": "Comma-separated tags that bypass decay", "default": "permanent,memory:permanent,hindsight:permanent"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
@@ -706,12 +729,32 @@ class HindsightMemoryProvider(MemoryProvider):
         self._apply_retain_settings(cfg)
         self._apply_recall_settings(cfg)
 
+        # Optional LivingMemory-style soft decay. The ledger lives under the
+        # active HERMES_HOME, so profiles stay isolated. It never mutates
+        # Hindsight's durable memory store.
+        self._decay_enabled = _parse_bool_setting(cfg.get("decay_enabled", False), False)
+        self._decay_store = None
+        if self._decay_enabled:
+            try:
+                from .decay import HindsightDecayStore, policy_from_config
+
+                hermes_home = Path(kwargs.get("hermes_home") or get_hermes_home())
+                self._decay_store = HindsightDecayStore(
+                    hermes_home / "hindsight" / "decay.sqlite3",
+                    bank_id=self._bank_id,
+                    policy=policy_from_config(cfg),
+                )
+            except Exception as exc:
+                # A local ledger must never disable Hindsight itself.
+                self._decay_enabled = False
+                logger.warning("Hindsight decay disabled: %s", exc)
+
         client_version = "unknown"
         with contextlib.suppress(Exception):
             from importlib.metadata import version as pkg_version
             client_version = pkg_version("hindsight-client")
-        logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",
-                    self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method, client_version)
+        logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, decay=%s, client=%s",
+                    self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method, self._decay_enabled, client_version)
         if self._bank_id_template:
             logger.debug("Hindsight bank resolved from template %r: profile=%s workspace=%s platform=%s user=%s -> bank=%s",
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
@@ -885,6 +928,29 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Prefetch: skipped (%s)", why)
         return why is not None
 
+    def _filter_decay_results(self, results: Any) -> list[Any]:
+        """Apply the optional local decay ledger without breaking recall."""
+        result_list = list(results or [])
+        if self._decay_store is None:
+            return result_list
+        try:
+            filtered = self._decay_store.filter_results(result_list)
+            if len(filtered) != len(result_list):
+                logger.debug(
+                    "Hindsight decay filtered %d/%d recall results (bank=%s)",
+                    len(result_list) - len(filtered),
+                    len(result_list),
+                    self._bank_id,
+                )
+            return filtered
+        except Exception as exc:
+            # Decay is optional. A ledger failure must not turn a healthy
+            # Hindsight backend into a memory outage.
+            if not self._decay_error_logged:
+                logger.warning("Hindsight decay recall filter failed: %s", exc)
+                self._decay_error_logged = True
+            return result_list
+
     def _recall(self, query: str) -> list:
         kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
         if self._recall_tags:
@@ -892,7 +958,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_types:
             kwargs["types"] = self._recall_types
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
-        return resp.results or []
+        return self._filter_decay_results(resp.results)
 
     def _reflect(self, query: str) -> str | None:
         resp = self._run_hindsight_operation(
