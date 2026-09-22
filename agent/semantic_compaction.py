@@ -16,6 +16,86 @@ from semantic_compaction_provider import (
 
 logger = logging.getLogger(__name__)
 
+_VALID_PROPOSAL_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+
+def _valid_content_shape(content: Any) -> bool:
+    if content is None or isinstance(content, str):
+        return True
+    if not isinstance(content, list):
+        return False
+    return all(
+        isinstance(block, Mapping)
+        and isinstance(block.get("type"), str)
+        and bool(block.get("type"))
+        for block in content
+    )
+
+
+def _valid_tool_call_shape(tool_call: Any) -> bool:
+    if not isinstance(tool_call, Mapping):
+        return False
+    call_id = tool_call.get("id") or tool_call.get("call_id")
+    if not isinstance(call_id, str) or not call_id.strip():
+        return False
+    call_type = tool_call.get("type", "function")
+    if call_type != "function":
+        return False
+    function = tool_call.get("function")
+    if not isinstance(function, Mapping):
+        return False
+    name = function.get("name")
+    arguments = function.get("arguments")
+    return (
+        isinstance(name, str)
+        and bool(name.strip())
+        and isinstance(arguments, str)
+    )
+
+
+def _proposal_messages_are_provider_safe(messages: tuple[Any, ...]) -> bool:
+    """Reject any candidate Hermes would need to repair before provider rendering."""
+    normalized = []
+    for raw in messages:
+        if not isinstance(raw, Mapping):
+            return False
+        message = dict(raw)
+        role = message.get("role")
+        if role not in _VALID_PROPOSAL_ROLES:
+            return False
+        if not _valid_content_shape(message.get("content")):
+            return False
+
+        tool_calls = message.get("tool_calls")
+        if tool_calls is not None:
+            if (
+                role != "assistant"
+                or not isinstance(tool_calls, list)
+                or not tool_calls
+                or not all(_valid_tool_call_shape(call) for call in tool_calls)
+            ):
+                return False
+
+        if role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if not isinstance(tool_call_id, str) or not tool_call_id.strip():
+                return False
+
+        if role in {"user", "system", "developer", "function", "tool"} and message.get("content") is None:
+            return False
+        if role == "assistant" and message.get("content") is None and not tool_calls:
+            return False
+        normalized.append(message)
+
+    # The pre-provider sanitizer is Hermes' final repair boundary. Run it only on a
+    # deep copy: if it would have to alter the proposed transcript, reject the
+    # proposal rather than making repaired plugin output canonical.
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    original = copy.deepcopy(normalized)
+    repaired = sanitize_api_messages(copy.deepcopy(normalized))
+    return repaired == original
+
 
 def _valid_proposal(proposal: Any, source_fingerprint: str) -> bool:
     if not isinstance(proposal, SemanticCompactionProposal):
@@ -26,7 +106,7 @@ def _valid_proposal(proposal: Any, source_fingerprint: str) -> bool:
         return False
     if not 0 <= proposal.summary_index < len(proposal.messages):
         return False
-    if not all(isinstance(message, Mapping) for message in proposal.messages):
+    if not _proposal_messages_are_provider_safe(proposal.messages):
         return False
     summary = proposal.messages[proposal.summary_index]
     return summary.get("role") in {"user", "assistant"} and bool(summary.get("content"))

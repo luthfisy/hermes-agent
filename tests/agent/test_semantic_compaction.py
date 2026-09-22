@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from agent import semantic_compaction as semantic
 from semantic_compaction_provider import (
     SemanticCompactionProposal,
@@ -89,6 +91,55 @@ def test_valid_semantic_proposal_is_stamped_and_finalized(monkeypatch):
     assert compactor.requests[0].force is True
     assert compactor.closed is True
     assert agent.context_compressor.finalized is not None
+
+
+@pytest.mark.parametrize(
+    "bad_tail",
+    [
+        {"role": "not-a-provider-role", "content": "poison"},
+        {"role": "assistant", "content": {"invalid": "shape"}},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call-1", "function": {"name": "read_file"}}],
+        },
+        {"role": "tool", "content": "result without id"},
+    ],
+)
+def test_malformed_non_summary_rows_are_rejected_without_mutation(monkeypatch, bad_tail):
+    def _malformed_proposal(request):
+        return SemanticCompactionProposal(
+            source_fingerprint=request.source_fingerprint,
+            messages=(
+                {"role": "user", "content": "valid semantic summary"},
+                bad_tail,
+            ),
+            summary_index=0,
+            summary_has_user_turn=True,
+        )
+
+    compactor = FakeCompactor(_malformed_proposal)
+    monkeypatch.setattr(semantic, "load_semantic_compactor", lambda name: compactor)
+    agent = _agent()
+    messages = [
+        {"role": "user", "content": "old question", "_db_persisted": True},
+        {"role": "assistant", "content": "old answer", "_db_persisted": True},
+    ]
+    original = [dict(message) for message in messages]
+
+    result = semantic.try_semantic_compaction(
+        agent,
+        messages,
+        current_tokens=500,
+        focus_topic=None,
+        memory_context="",
+        force=False,
+    )
+
+    assert result is None
+    assert messages == original
+    assert agent.context_compressor.finalized is None
+    assert compactor.closed is True
 
 
 def test_stale_source_falls_back_to_native(monkeypatch):
