@@ -322,6 +322,7 @@ export function useCompleteTurn(
         const hasInlineError = nextMessages.some(
           (m, index) => index > lastUserIndex && m.role === 'assistant' && m.error && !m.hidden
         )
+
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
