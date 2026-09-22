@@ -137,6 +137,9 @@ Candidate capabilities:
 class ConversationIndex(ABC):
     def is_available(self) -> bool: ...
 
+    def validate_cursor(self, cursor: int) -> None:
+        """Raise ConversationIndexRebuildRequired if durable derived state cannot resume here."""
+
     def consume_changes(
         self,
         changes: Sequence[ConversationChange],
@@ -485,8 +488,12 @@ Coverage includes:
 ## Phase 5 — Rebuild, lag, and operator status
 
 **Status: complete.** Retention gaps, impossible cursors (ahead of canonical high-water),
-and provider-raised `ConversationIndexRebuildRequired` now converge on one canonical
-rebuild path. Hermes captures a body-free `ConversationSnapshot`, passes it to
+startup validation failures, and provider-raised `ConversationIndexRebuildRequired` now
+converge on one canonical rebuild path. After provider initialization Hermes calls
+`validate_cursor(cursor)` once even when the feed is already caught up, so a provider
+whose durable generation was lost or corrupted can request rebuild without waiting for
+an unrelated future transcript mutation. Hermes captures a body-free
+`ConversationSnapshot`, passes it to
 `ConversationIndex.rebuild_from_snapshot()`, and advances the durable Hermes-owned
 cursor only when the provider returns the exact snapshot watermark it atomically
 installed. A failed rebuild leaves `rebuild_required` sticky and retries rebuild rather

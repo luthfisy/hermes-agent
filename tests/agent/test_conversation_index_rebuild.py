@@ -17,6 +17,8 @@ class RebuildIndex(ConversationIndex):
         self.documents = {}
         self.rebuild_callback = None
         self.force_rebuild = False
+        self.force_validation_rebuild = False
+        self.validate_calls = []
         self.bad_watermark = False
 
     def initialize(self, source, *, profile_name, hermes_home):
@@ -24,6 +26,12 @@ class RebuildIndex(ConversationIndex):
 
     def is_available(self):
         return True
+
+    def validate_cursor(self, cursor):
+        self.validate_calls.append(cursor)
+        if self.force_validation_rebuild:
+            self.force_validation_rebuild = False
+            raise ConversationIndexRebuildRequired("derived generation missing")
 
     def consume_changes(self, changes, *, after_cursor):
         if self.force_rebuild:
@@ -108,6 +116,39 @@ def test_rebuild_replays_changes_committed_after_snapshot_watermark(db, tmp_path
     assert consumer.run_once() == 2
     assert store.load() == 2
     assert index.calls == [(1, (2,))]
+
+
+def test_restart_validation_rebuilds_lost_index_when_feed_is_caught_up(db, tmp_path):
+    row_id = db.append_message("alpha", role="user", content="one")
+    first_index = RebuildIndex()
+    first, store = _consumer(db, tmp_path, first_index)
+
+    assert first.run_once() == 1
+    assert store.load() == 1
+    first.close()
+
+    wiped_index = RebuildIndex()
+    wiped_index.force_validation_rebuild = True
+    restarted = ConversationIndexConsumer(
+        index_name="fake",
+        index=wiped_index,
+        db_path=Path(db.db_path),
+        cursor_store=store,
+        profile_name="default",
+        hermes_home=tmp_path,
+        batch_size=10,
+    )
+
+    assert db.get_conversation_change_bounds().high_water_sequence == 1
+    assert restarted.status().cursor == 1
+    assert restarted.run_once() == 1
+    assert wiped_index.validate_calls == [1]
+    assert wiped_index.calls == []
+    assert wiped_index.rebuilds == [1]
+    assert wiped_index.documents == {("alpha", row_id): "one"}
+    assert restarted.status().state == "idle"
+    assert restarted.status().last_recovery_at is not None
+    restarted.close()
 
 
 def test_provider_can_request_rebuild_when_derived_state_is_lost(db, tmp_path):

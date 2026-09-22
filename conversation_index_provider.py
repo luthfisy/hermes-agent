@@ -42,6 +42,14 @@ class ConversationIndex(ABC):
     def is_available(self) -> bool:
         """Return whether this index can currently consume/search."""
 
+    def validate_cursor(self, cursor: int) -> None:
+        """Validate that durable derived state matches Hermes' persisted cursor.
+
+        Called once after provider initialization, including when the feed is already
+        caught up. Raise ConversationIndexRebuildRequired if derived state is missing,
+        corrupt, or otherwise cannot safely continue from the supplied cursor.
+        """
+
     @abstractmethod
     def consume_changes(
         self, changes: Sequence["ConversationChange"], *, after_cursor: int,

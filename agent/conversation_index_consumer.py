@@ -44,6 +44,7 @@ class ConversationIndexConsumer:
         self._db = None
         self._source = None
         self._initialized = False
+        self._provider_cursor_validated = False
         self._status_tracker = ConversationIndexStatusTracker(
             index_name,
             cursor_store.load(),
@@ -95,6 +96,7 @@ class ConversationIndexConsumer:
                 next_retry_at=None,
             )
             committed = rebuild_conversation_index(self.index, self._db, self.cursor_store)
+            self._provider_cursor_validated = True
             latest_bounds = self._db.get_conversation_change_bounds()
             self._status_tracker.record_success(committed, latest_bounds, recovered=True)
             return committed
@@ -120,6 +122,13 @@ class ConversationIndexConsumer:
                 return self._rebuild()
             if cursor < bounds.floor_sequence - 1 or cursor > bounds.high_water_sequence:
                 return self._rebuild()
+
+            if not self._provider_cursor_validated:
+                try:
+                    self.index.validate_cursor(cursor)
+                except ConversationIndexRebuildRequired:
+                    return self._rebuild()
+                self._provider_cursor_validated = True
 
             changes = self._db.get_conversation_changes(
                 after_sequence=cursor,
