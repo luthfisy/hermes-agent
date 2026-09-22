@@ -2396,6 +2396,7 @@ export interface Translations {
     review: string
     logs: string
     cronJobs: string
+    kanbanSessions: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
     showProjects: string
