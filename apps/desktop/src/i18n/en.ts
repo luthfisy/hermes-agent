@@ -1200,6 +1200,10 @@ export const en: Translations = {
       backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
       backendIdleTimeoutTitle: 'Backend Idle Timeout'
     },
+    projectTreePreview: {
+      aria: 'Sessions previewed per project',
+      title: 'Project Session Preview'
+    },
     customEndpoints: {
       title: 'Custom Endpoints',
       deleteEndpoint: 'Delete endpoint',
