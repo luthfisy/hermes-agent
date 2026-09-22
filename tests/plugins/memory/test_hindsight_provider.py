@@ -379,7 +379,8 @@ class TestConfig:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
-        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        embedded_module = SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded)
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=embedded_module))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
 
         p = HindsightMemoryProvider()
