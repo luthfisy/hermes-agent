@@ -46,6 +46,7 @@ import {
   taskKey,
   uploadAttachment
 } from './api'
+import { cardFace, workSummary } from './card-face'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -406,10 +407,6 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
   )
 }
 
-// `latest_summary` is just the newest non-null run summary. A reclaim writes an
-// administrative note into that slot; hide those (Runs still shows them).
-const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
-
 function AttachmentsSection({
   attachments,
   onUpload,
@@ -540,11 +537,14 @@ function EstimateSection({ id }: { id: string }) {
 
 export function TaskDrawer({
   columns,
+  fleet,
   id,
   onClose,
   onOpen
 }: {
   columns: string[]
+  /** Verified fleet context — read through the sync decoration (card-face.ts). */
+  fleet: boolean
   id: null | string
   onClose: () => void
   onOpen: (id: string) => void
@@ -556,18 +556,21 @@ export function TaskDrawer({
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
     enabled: !!id,
-    queryFn: () => fetchTask(id!),
+    queryFn: () => fetchTask(id!, slug),
     queryKey: taskKey(slug, id ?? ''),
     refetchInterval: 30_000
   })
 
   const task = detail?.task
+  // The readable card behind the fleet sync adapter's decoration (card-face.ts);
+  // literal off the fleet board.
+  const face = task ? cardFace(task, fleet) : null
   const running = task?.status === 'running'
   const defaultAssignee = useDefaultAssignee()
 
   const { data: log } = useQuery({
     enabled: !!id,
-    queryFn: () => fetchLog(id!),
+    queryFn: () => fetchLog(id!, slug),
     queryKey: logKey(slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000
   })
@@ -688,6 +691,12 @@ export function TaskDrawer({
               {shortId(task.id)}
             </span>
           )}
+          {/* Sync outbox state lives HERE, not on the card face. */}
+          {face?.syncState && (
+            <Badge size="xs" variant={face.syncState === 'pending' ? 'muted' : 'destructive'}>
+              {k.sync[face.syncState]}
+            </Badge>
+          )}
           <div className="ml-auto flex items-center gap-0.5">
             {task && (
               <DropdownMenu>
@@ -712,7 +721,7 @@ export function TaskDrawer({
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onSelect={() => {
-                      void navigator.clipboard.writeText(task.title || task.id)
+                      void navigator.clipboard.writeText(face?.title || task.id)
                       host.notify({ kind: 'info', message: k.copiedTitle })
                     }}
                   >
@@ -743,7 +752,7 @@ export function TaskDrawer({
         </div>
         {task && (
           <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
-            {task.title || task.id}
+            {face?.title || task.id}
           </h2>
         )}
       </header>
@@ -799,7 +808,21 @@ export function TaskDrawer({
               </Section>
             )}
 
-            <DescriptionSection body={task.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
+            <DescriptionSection body={face?.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
+
+            {/* The sync adapter's lifted bookkeeping — off the card face, kept
+                here where an operator debugging a stuck sync looks for it. */}
+            {face && face.meta.length > 0 && (
+              <Section label={k.fleetSync}>
+                <ul className="flex flex-col gap-0.5 font-mono text-[0.6875rem] text-(--ui-text-tertiary)">
+                  {face.meta.map(line => (
+                    <li className="break-words whitespace-pre-wrap" key={line}>
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+            )}
 
             <EstimateSection id={task.id} />
 
@@ -809,7 +832,7 @@ export function TaskDrawer({
               </Section>
             )}
 
-            {task.latest_summary && !isAdminSummary(task.latest_summary) && (
+            {workSummary(task.latest_summary) && (
               <Section label={k.latestSummary}>
                 <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.latest_summary}</p>
               </Section>
