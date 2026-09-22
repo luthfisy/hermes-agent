@@ -1006,6 +1006,7 @@ Key tables in `state.db`:
 - `sessions.retention_days` must be a whole number of days `>= 0`. A negative value (or a missing one) is rejected: startup maintenance logs a warning naming the allowed range and skips the sweep instead of treating the future cutoff as "everything" — `sessions.auto_prune: false` is the switch that disables pruning
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space only when **both** gates pass: at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM`, **and** more than 25% of the file's pages are reclaimable (`PRAGMA freelist_count / page_count`). A dense database never pays for a full rewrite to reclaim a few MB (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
+- The derived conversation-change feed is independently bounded by `sessions.conversation_change_retention_rows` (default 50,000). Set it to `0` to explicitly keep the feed indefinitely. Lagging index consumers rebuild if they fall behind a bounded retained floor.
 
 Without pruning, `state.db` grows without bound — multi-GB files within weeks were reported on gateway + cron installs. If you would rather keep every ended session forever (the pre-#54189 behavior), turn it off in `~/.hermes/config.yaml`:
 
@@ -1013,6 +1014,7 @@ Without pruning, `state.db` grows without bound — multi-GB files within weeks 
 sessions:
   auto_prune: false         # default is true — set false to keep all history
   retention_days: 90        # keep ended sessions active within this window
+  conversation_change_retention_rows: 50000 # 0 keeps the derived-index feed indefinitely
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
   min_vacuum_interval_days: 30 # don't rewrite the DB more often than this
   min_interval_hours: 24    # don't re-run the sweep more often than this

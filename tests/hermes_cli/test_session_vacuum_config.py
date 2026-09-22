@@ -8,6 +8,12 @@ def test_default_config_exposes_vacuum_interval():
     assert DEFAULT_CONFIG["sessions"]["min_vacuum_interval_days"] == 30
 
 
+def test_default_config_bounds_conversation_change_feed():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["sessions"]["conversation_change_retention_rows"] == 50_000
+
+
 def test_default_config_auto_prune_on_with_90_day_retention():
     """#54189: state.db retention is ON by default (ended sessions, 90 days)."""
     from hermes_cli.config import DEFAULT_CONFIG

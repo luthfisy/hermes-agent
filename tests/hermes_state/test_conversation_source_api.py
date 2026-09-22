@@ -57,8 +57,15 @@ def test_feed_retention_bounds_rows_and_preserves_high_water(db):
 
 
 def test_long_lived_writer_prunes_feed_without_index_provider(db, monkeypatch):
-    monkeypatch.setattr(db, "CONVERSATION_CHANGE_RETENTION_ROWS", 3)
+    import hermes_cli.config
+
+    monkeypatch.setattr(
+        hermes_cli.config,
+        "load_config_readonly",
+        lambda: {"sessions": {"conversation_change_retention_rows": 3}},
+    )
     monkeypatch.setattr(db, "_CONVERSATION_CHANGE_RETENTION_SWEEP_INTERVAL", 1)
+    assert db.prune_conversation_changes() == 0
 
     for index in range(5):
         db.append_message("alpha", role="user", content=f"message-{index}")
@@ -67,6 +74,27 @@ def test_long_lived_writer_prunes_feed_without_index_provider(db, monkeypatch):
     assert bounds.floor_sequence == 3
     assert bounds.high_water_sequence == 5
     assert db._conn.execute("SELECT COUNT(*) FROM conversation_changes").fetchone()[0] == 3
+
+
+def test_configured_zero_disables_feed_retention(db, monkeypatch):
+    import hermes_cli.config
+
+    monkeypatch.setattr(
+        hermes_cli.config,
+        "load_config_readonly",
+        lambda: {"sessions": {"conversation_change_retention_rows": 0}},
+    )
+    monkeypatch.setattr(db, "_CONVERSATION_CHANGE_RETENTION_SWEEP_INTERVAL", 1)
+    assert db.prune_conversation_changes() == 0
+
+    for index in range(5):
+        db.append_message("alpha", role="user", content=f"message-{index}")
+
+    assert db.prune_conversation_changes() == 0
+    bounds = db.get_conversation_change_bounds()
+    assert bounds.floor_sequence == 1
+    assert bounds.high_water_sequence == 5
+    assert db._conn.execute("SELECT COUNT(*) FROM conversation_changes").fetchone()[0] == 5
 
 
 def test_profile_scoped_conversation_enumeration(tmp_path):

@@ -207,14 +207,16 @@ This guarantees that a plugin outage cannot create an unobservable committed tra
 
 ### Feed retention
 
-The feed is durable but not infinite history.
+The feed is durable and bounded by default; operators may explicitly opt into infinite history.
 
-Core maintenance retains the newest **50,000 sequence positions** by default. Retention
-is owned by Hermes itself, not by a plugin cursor: normal state-db housekeeping prunes the
-feed even when no index provider is configured. Long-lived canonical writers also perform
-an opportunistic sweep every 1,000 published changes, bounding the between-maintenance
-window to fewer than 51,000 sequence positions. Pruning deletes only old outbox rows;
-SQLite's AUTOINCREMENT high-water mark is preserved.
+Core maintenance retains the newest **50,000 sequence positions** by default, configured
+by `sessions.conversation_change_retention_rows`. Retention is owned by Hermes itself,
+not by a plugin cursor: normal state-db housekeeping prunes the feed even when no index
+provider is configured. Long-lived canonical writers also perform an opportunistic sweep
+every 1,000 published changes. With the default bound, that keeps the between-maintenance
+window below 51,000 sequence positions. Setting the configured bound to `0` explicitly
+disables feed pruning and retains the outbox indefinitely. Pruning deletes only old outbox
+rows; SQLite's AUTOINCREMENT high-water mark is preserved.
 
 Core exposes:
 
@@ -222,7 +224,7 @@ Core exposes:
 - oldest retained sequence; and
 - changes after a cursor.
 
-If a plugin cursor predates the retained floor, incremental replay fails explicitly with "rebuild required." Retention policy is bounded and independent of plugin availability; a dead or unavailable plugin cannot grow core storage without limit and rebuilds from canonical history after falling behind.
+If a plugin cursor predates the retained floor, incremental replay fails explicitly with "rebuild required." The default retention policy is bounded and independent of plugin availability; a dead or unavailable plugin cannot pin core storage. Operators may explicitly set the retention bound to `0` when they prefer unbounded feed history instead of automatic pruning.
 
 ## Rebuild protocol
 

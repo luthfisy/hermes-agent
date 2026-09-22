@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from conversation_index import (
     ConversationChangeType, canonical_content_hash, canonical_message_index_state,
 )
+
+logger = logging.getLogger("hermes_state")
 
 
 class SessionConversationIndexMixin:
@@ -16,6 +19,44 @@ class SessionConversationIndexMixin:
     # rebuild from canonical history; provider health never pins state.db growth.
     CONVERSATION_CHANGE_RETENTION_ROWS = 50_000
     _CONVERSATION_CHANGE_RETENTION_SWEEP_INTERVAL = 1_000
+
+    def _resolve_conversation_change_retention_rows(self) -> int:
+        """Resolve sessions.conversation_change_retention_rows safely.
+
+        Invalid housekeeping config must not make canonical transcript persistence fail;
+        malformed values are surfaced and fall back to the bounded default.
+        """
+        default = self.CONVERSATION_CHANGE_RETENTION_ROWS
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            sessions = (load_config_readonly().get("sessions") or {})
+            raw = sessions.get("conversation_change_retention_rows", default)
+        except Exception as exc:
+            logger.debug("Could not read conversation-change retention config: %s", exc)
+            return default
+
+        if isinstance(raw, bool):
+            logger.warning(
+                "sessions.conversation_change_retention_rows=%r is invalid; "
+                "using bounded default %d", raw, default,
+            )
+            return default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "sessions.conversation_change_retention_rows=%r is invalid; "
+                "using bounded default %d", raw, default,
+            )
+            return default
+        if value < 0:
+            logger.warning(
+                "sessions.conversation_change_retention_rows=%r must be >= 0; "
+                "using bounded default %d", raw, default,
+            )
+            return default
+        return value
 
     @staticmethod
     def _prune_conversation_changes_on(conn, max_rows: int) -> int:
@@ -35,25 +76,32 @@ class SessionConversationIndexMixin:
     def prune_conversation_changes(self, *, max_rows: int | None = None) -> int:
         """Retain at most the newest ``max_rows`` feed sequence positions.
 
-        Deleting rows never resets SQLite's AUTOINCREMENT high-water mark, so the
-        surviving minimum sequence becomes the retained floor and lagging consumers
-        deterministically rebuild instead of pinning canonical storage.
+        When omitted, the bound comes from
+        ``sessions.conversation_change_retention_rows`` (default 50,000).
+        A value of 0 explicitly disables feed pruning. Deleting rows never resets
+        SQLite's AUTOINCREMENT high-water mark, so the surviving minimum sequence
+        becomes the retained floor and lagging consumers deterministically rebuild.
         """
         if max_rows is None:
-            max_rows = self.CONVERSATION_CHANGE_RETENTION_ROWS
-        if isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 1:
-            raise ValueError("max_rows must be a positive integer")
+            max_rows = self._resolve_conversation_change_retention_rows()
+            self._conversation_change_retention_rows = max_rows
+        if isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 0:
+            raise ValueError("max_rows must be a non-negative integer")
+        if max_rows == 0:
+            return 0
         return int(self._execute_write(
             lambda conn: self._prune_conversation_changes_on(conn, max_rows)
         ) or 0)
 
     def _maybe_prune_conversation_changes(self, conn, sequence: int) -> None:
         """Bound long-lived writers between normal maintenance sweeps."""
-        max_rows = self.CONVERSATION_CHANGE_RETENTION_ROWS
-        if sequence <= max_rows:
-            return
         interval = self._CONVERSATION_CHANGE_RETENTION_SWEEP_INTERVAL
         if interval < 1 or sequence % interval:
+            return
+        max_rows = getattr(
+            self, "_conversation_change_retention_rows", self.CONVERSATION_CHANGE_RETENTION_ROWS
+        )
+        if max_rows == 0 or sequence <= max_rows:
             return
         self._prune_conversation_changes_on(conn, max_rows)
 
