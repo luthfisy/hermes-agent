@@ -3651,13 +3651,14 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return False
     status_code = getattr(exc, "status_code", None)
 
-    def _rotate(fallback_status: int) -> bool:
+    def _rotate(fallback_status: int, *, require_alternative: bool = False) -> bool:
         error_context: Dict[str, Any] = {"message": str(exc)}
         if status_code is not None:
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context, api_key_hint=failed_api_key or None,
+            require_alternative=require_alternative,
         )
         if next_entry is None:
             return False
@@ -3670,9 +3671,11 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             return True
         return _rotate(401)
     if _is_payment_error(exc):
-        return _rotate(402)
+        # Auxiliary billing/rate-limit failures may rotate shared credentials,
+        # but must not quarantine the only key the owning main route can try.
+        return _rotate(402, require_alternative=True)
     if _is_rate_limit_error(exc) and not _is_overloaded_error(exc):
-        return _rotate(429)
+        return _rotate(429, require_alternative=True)
     return False
 
 
