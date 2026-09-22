@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 from tools.skills_sync_client_wire import (
     ObjectSet, SyncClient, SyncConflict, SyncError, assemble_root_from_skill_trees, build_commit, build_tree,
     checked_capabilities, materialize_tree, read_ref_hash, root_tree_of_commit, skill_trees_of_root)
+from tools.skills_sync_optional import _is_runtime_cache
 
 logger = logging.getLogger("tools.skills_sync_client")
 ORG_DIR_NAME = "_org"
@@ -87,11 +88,13 @@ def _write_sidecar(what: str, path_fn: Callable[[], Path], text: str) -> None:
         logger.debug("skills_sync_client: %s write failed: %s", what, e)
 
 
-def _skill_dir_fingerprint(path: Path) -> str:
-    """Content hash of a skill dir (sorted relative path + bytes; mtime-independent). "" on read failure."""
+def _hash_skill_files(path: Path, *, include_runtime_cache: bool) -> str:
+    """Sorted relative path + bytes. "" on read failure. Caches are optional."""
     h = hashlib.sha256()
     try:
         for f in sorted(p for p in path.rglob("*") if p.is_file()):
+            if not include_runtime_cache and _is_runtime_cache(f, path):
+                continue
             h.update(str(f.relative_to(path)).replace("\\", "/").encode("utf-8"))
             h.update(b"\0")
             h.update(f.read_bytes())
@@ -100,6 +103,23 @@ def _skill_dir_fingerprint(path: Path) -> str:
         logger.debug("skills_sync_client: fingerprint failed for %s: %s", path, e)
         return ""
     return h.hexdigest()
+
+
+def _skill_dir_fingerprint(path: Path) -> str:
+    """Content hash of a skill dir (sorted relative path + bytes; mtime-independent). "" on read failure.
+
+    Generated runtime caches are not content: a mirrored skill that was merely imported must
+    not read as locally modified, and the same exclusion keeps this fingerprint aligned with
+    the synced tree (`build_tree`)."""
+    return _hash_skill_files(path, include_runtime_cache=False)
+
+
+def _legacy_skill_dir_fingerprint(path: Path) -> str:
+    """Pre-#94127 hash: every regular file, including generated caches.
+
+    Used only to recognize an unchanged legacy baseline. New baselines store
+    `_skill_dir_fingerprint`."""
+    return _hash_skill_files(path, include_runtime_cache=True)
 
 
 def _sidecar_path(org_id: Optional[str], const: str) -> Path:
@@ -144,11 +164,30 @@ def _clear_active_org_marker() -> None:
 
 
 def org_skill_is_locally_modified(skill_rel_path: str, org_id: str) -> bool:
-    """Local copy differs from upstream's fingerprint. No baseline (pre-existing mirror) => unmodified."""
+    """Local copy differs from the recorded fingerprint. No baseline => unmodified.
+
+    A cache-free match is unchanged. A match of the pre-#94127 all-files hash is an
+    unchanged legacy mirror: the sidecar is rewritten to the current fingerprint.
+    Any other mismatch stays a real local edit."""
     dest = _mirror_root(org_id) / PurePosixPath(skill_rel_path)
-    entry = _read_org_baseline(org_id).get(skill_rel_path) or {}
+    baseline = _read_org_baseline(org_id)
+    entry = baseline.get(skill_rel_path) or {}
     recorded = entry.get("fingerprint") if isinstance(entry, dict) else entry
-    return dest.is_dir() and bool(recorded) and _skill_dir_fingerprint(dest) != recorded
+    if not dest.is_dir() or not recorded:
+        return False
+    current = _skill_dir_fingerprint(dest)
+    if current == recorded:
+        return False
+    if current and _legacy_skill_dir_fingerprint(dest) == recorded:
+        if isinstance(entry, dict):
+            updated = dict(entry)
+            updated["fingerprint"] = current
+            baseline[skill_rel_path] = updated
+        else:
+            baseline[skill_rel_path] = current
+        _write_org_baseline(org_id, baseline)
+        return False
+    return True
 
 
 def _active_org_id() -> Optional[str]:
