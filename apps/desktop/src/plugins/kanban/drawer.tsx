@@ -19,8 +19,10 @@ import {
   ErrorState,
   host,
   isSubmitEnter,
+  Input,
   Loader,
   LogView,
+  Switch,
   Textarea,
   Tip,
   useMutation,
@@ -173,11 +175,118 @@ function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label:
   }
 }
 
-function MetaRow({ children, label }: { children: ReactNode; label: string }) {
+function MetaRow({ children, label }: { children: ReactNode; label: ReactNode }) {
   return (
     <>
       <span className="text-(--ui-text-quaternary)">{label}</span>
       <span className="min-w-0 truncate text-(--ui-text-secondary)">{children}</span>
+    </>
+  )
+}
+
+function GoalConfigurationFields({
+  goalMaxTurns,
+  goalMode,
+  locked,
+  onPatch
+}: {
+  goalMaxTurns: null | number | undefined
+  goalMode: boolean
+  locked: boolean
+  onPatch: (patch: Record<string, unknown>) => Promise<boolean>
+}) {
+  const k = useKanban()
+  const formattedBudget = goalMaxTurns == null ? '' : String(goalMaxTurns)
+  const [budget, setBudget] = useState(formattedBudget)
+  const [enabled, setEnabled] = useState(goalMode)
+  const [pending, setPending] = useState(false)
+
+  // Query invalidation can refresh the drawer while it stays open. Keep this
+  // field controlled by that authoritative task state rather than retaining an
+  // old uncontrolled default value.
+  useEffect(() => setBudget(formattedBudget), [formattedBudget])
+  useEffect(() => setEnabled(goalMode), [goalMode])
+
+  const commitBudget = async () => {
+    const raw = budget.trim()
+    if (!raw) {
+      if (goalMaxTurns != null) {
+        setPending(true)
+        const ok = await onPatch({ goal_max_turns: null })
+        setPending(false)
+        if (!ok) {
+          setBudget(formattedBudget)
+        }
+      }
+      return
+    }
+
+    const next = Number(raw)
+    if (!Number.isInteger(next) || next < 1) {
+      setBudget(formattedBudget)
+      host.notify({ kind: 'error', message: k.goalTurnBudgetInvalid })
+      return
+    }
+    if (next !== goalMaxTurns) {
+      setPending(true)
+      const ok = await onPatch({ goal_max_turns: next })
+      setPending(false)
+      if (!ok) {
+        setBudget(formattedBudget)
+      }
+    }
+  }
+
+  return (
+    <>
+      <MetaRow
+        label={
+          <Tip label={k.goalModeDescription}>
+            <span className="cursor-help">{k.goalMode}</span>
+          </Tip>
+        }
+      >
+        <span title={locked ? k.goalSettingsLocked : undefined}>
+          <Switch
+            aria-label={k.goalMode}
+            checked={enabled}
+            disabled={locked || pending}
+            onCheckedChange={next => {
+              setEnabled(next)
+              setPending(true)
+              void onPatch({ goal_mode: next }).then(ok => {
+                if (!ok) {
+                  setEnabled(goalMode)
+                  setBudget(formattedBudget)
+                }
+                setPending(false)
+              })
+            }}
+            size="xs"
+          />
+        </span>
+      </MetaRow>
+      <MetaRow
+        label={
+          <Tip label={k.goalTurnBudgetDescription}>
+            <span className="cursor-help">{k.goalTurnBudget}</span>
+          </Tip>
+        }
+      >
+        <span className="block w-full" title={locked ? k.goalSettingsLocked : undefined}>
+          <Input
+            aria-label={k.goalTurnBudget}
+            className="h-6 w-full text-[0.7rem]"
+            disabled={locked || pending}
+            min="1"
+            onBlur={() => void commitBudget()}
+            onChange={event => setBudget(event.currentTarget.value)}
+            placeholder={k.goalTurnBudgetPlaceholder}
+            type="number"
+            value={budget}
+          />
+        </span>
+      </MetaRow>
     </>
   )
 }
@@ -568,6 +677,7 @@ export function TaskDrawer({
 
   const task = detail?.task
   const running = task?.status === 'running'
+  const goalSettingsLocked = detail?.goal_configuration_locked ?? true
   const defaultAssignee = useDefaultAssignee()
 
   const { data: log } = useQuery({
@@ -624,8 +734,23 @@ export function TaskDrawer({
         invalidate()
         onDone?.()
       },
-      (err: unknown) => host.notify({ kind: 'error', message: errText(err) })
+      (err: unknown) => {
+        invalidate()
+        host.notify({ kind: 'error', message: errText(err) })
+      }
     )
+
+  const patchGoalConfiguration = async (patch: Record<string, unknown>) => {
+    try {
+      await patchTask(id!, patch)
+      invalidate()
+      return true
+    } catch (err) {
+      invalidate()
+      host.notify({ kind: 'error', message: errText(err) })
+      return false
+    }
+  }
 
   const commentMut = useMutation({
     mutationFn: (body: string) => addComment(id!, body),
@@ -787,6 +912,12 @@ export function TaskDrawer({
                   }}
                 />
               </MetaRow>
+              <GoalConfigurationFields
+                goalMaxTurns={task.goal_max_turns}
+                goalMode={Boolean(task.goal_mode)}
+                locked={goalSettingsLocked}
+                onPatch={patchGoalConfiguration}
+              />
               {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
               {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
               {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}
