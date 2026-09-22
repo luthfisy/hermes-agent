@@ -119,6 +119,8 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
+    # Idle-unload target for aux compression models served by this endpoint (agent/aux_compression_unload.py).
+    "unload_url",
     "catalog_provider", "session_affinity_header"}
 
 
@@ -240,6 +242,7 @@ def _normalize_custom_provider_entry(
     api_mode = _stripped("api_mode", "transport")
     _put("api_mode", _canonical_api_mode(api_mode) if api_mode else "")
     _put("model", _stripped("model", "default_model"))
+    _put("unload_url", _stripped("unload_url"))
     # Catalogued vendor whose models this endpoint resells (metadata lookups only, never routing).
     _put("catalog_provider", _stripped("catalog_provider"))
 
