@@ -716,6 +716,7 @@ export const zh = defineLocale({
       completionSoundPreview: '预览'
     },
     sections: {
+      browser: '浏览器',
       model: '模型',
       chat: '对话',
       appearance: '外观',
