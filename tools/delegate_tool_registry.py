@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+import secrets
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -51,8 +52,9 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
         return
-    record.setdefault("accepting_steer", True)
     with _active_subagents_lock:
+        record.setdefault("accepting_steer", True)
+        record["_authority_generation"] = secrets.token_urlsafe(18)
         _active_subagents[sid] = record
 
 def _unregister_subagent(subagent_id: str, *, agent: Any = None) -> None:
@@ -89,15 +91,36 @@ def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
             return None
         return pending if isinstance(pending, str) and pending.strip() else None
 
-def interrupt_subagent(subagent_id: str) -> bool:
-    """Request that one running subagent stop at its next iteration boundary
-    (cooperative: the flag propagates to in-flight tools and recurses into
-    grandchildren via AIAgent.interrupt()). True iff a matching subagent was found."""
+def interrupt_subagent(
+    subagent_id: str,
+    *,
+    owner_session_id: Optional[str] = None,
+    owner_transport: Any = None,
+    owner_session_record: Any = None,
+    expected_generation: Optional[str] = None,
+) -> bool:
+    """Request that a single running subagent stop at its next iteration boundary.
+
+    Cooperative: sets the child's interrupt flag which propagates to in-flight tools and recurses
+    into grandchildren via AIAgent.interrupt(). Returns True if a matching subagent was found.
+    Gateway callers pass ``expected_generation``; legacy in-process callers may omit it.
+    """
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
-    agent = record.get("agent") if record else None
-    if agent is None:
-        return False
+        if not record:
+            return False
+        if owner_session_id is not None and not _record_matches_live_owner(
+            record,
+            owner_session_id=owner_session_id,
+            owner_transport=owner_transport,
+            owner_session_record=owner_session_record,
+        ):
+            return False
+        if expected_generation is not None and record.get("_authority_generation") != expected_generation:
+            return False
+        agent = record.get("agent")
+        if agent is None:
+            return False
     try:
         return bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
     except Exception as exc:
@@ -121,9 +144,50 @@ def _subagent_transport_matches(record, transport) -> bool:
     return bound is transport or (isinstance(bound, FanoutTransport) and bound.contains(transport))
 
 
+def _record_matches_live_owner(
+    record: Dict[str, Any],
+    *,
+    owner_session_id: Optional[str],
+    owner_transport: Any,
+    owner_session_record: Any,
+) -> bool:
+    return (
+        record.get("owner_session_id") == owner_session_id
+        and owner_transport is not None
+        and _subagent_transport_matches(record, owner_transport)
+        and owner_session_record is not None
+        and record.get("owner_session_record") is owner_session_record
+    )
+
+
+def owned_subagent_status(
+    subagent_id: str,
+    *,
+    owner_session_id: str,
+    owner_transport: Any,
+    owner_session_record: Any,
+) -> Optional[Dict[str, Any]]:
+    """Return a bounded live-child receipt only for the exact gateway owner."""
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if not record or not _record_matches_live_owner(
+            record,
+            owner_session_id=owner_session_id,
+            owner_transport=owner_transport,
+            owner_session_record=owner_session_record,
+        ):
+            return None
+        return {
+            "generation": str(record.get("_authority_generation") or ""),
+            "subagent_id": str(record.get("subagent_id") or ""),
+            "parent_id": record.get("parent_id"),
+            "status": str(record.get("status") or ""),
+        }
+
+
 def steer_subagent(
     subagent_id: str, text: str, *, owner_session_id: Optional[str] = None, owner_transport: Any = None,
-    owner_session_record: Any = None,
+    owner_session_record: Any = None, expected_generation: Optional[str] = None,
 ) -> bool:
     """Queue steering text into a running subagent without stopping it.
 
@@ -139,13 +203,14 @@ def steer_subagent(
         record = _active_subagents.get(subagent_id)
         if not record or not record.get("accepting_steer", False):
             return False
-        if owner_session_id is not None and (
-            record.get("owner_session_id") != owner_session_id
-            or owner_transport is None
-            or not _subagent_transport_matches(record, owner_transport)
-            or owner_session_record is None
-            or record.get("owner_session_record") is not owner_session_record
+        if owner_session_id is not None and not _record_matches_live_owner(
+            record,
+            owner_session_id=owner_session_id,
+            owner_transport=owner_transport,
+            owner_session_record=owner_session_record,
         ):
+            return False
+        if expected_generation is not None and record.get("_authority_generation") != expected_generation:
             return False
         agent = record.get("agent")
         if agent is None:
@@ -168,7 +233,7 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
+_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer", "_authority_generation"})
 
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,

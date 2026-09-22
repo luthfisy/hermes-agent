@@ -18,6 +18,15 @@ export {}
 
 declare global {
   interface Window {
+    __LUNAR_CITY_PERF_AUTHORIZED__?: true
+    __LUNAR_CITY_PERF__?: {
+      handshake: (expected: { bridgeVersion: number; launchNonce: string }) => unknown
+      mountCity: () => Promise<unknown>
+      prepareBaselineShell: () => Promise<unknown>
+      processMetrics: () => Promise<unknown>
+      runAction: (action: string, payload?: unknown) => Promise<unknown>
+      snapshot: () => Promise<unknown>
+    }
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 
+import { isLunarCityBrowserPreview } from '@/app/gateway/hooks/use-gateway-boot'
 import { Button } from '@/components/ui/button'
 import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { ErrorIcon } from '@/components/ui/error-state'
@@ -87,7 +88,7 @@ export function BootFailureOverlay() {
   // juggling, no second connection form to maintain).
   const [view, setView] = useState<RecoveryView>('recovery')
 
-  const visible = Boolean(boot.error) && !boot.running
+  const visible = !isLunarCityBrowserPreview() && Boolean(boot.error) && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
   // progress; the recovery overlay is for hard failures, which it covers via a
   // higher z-index regardless of onboarding state.

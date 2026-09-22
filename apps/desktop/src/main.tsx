@@ -7,6 +7,9 @@ import './store/power'
 import './store/translucency'
 // Side-effect: applies the persisted user-bubble transparency on load.
 import './store/user-bubble-transparency'
+// Acceptance-only Lunar City metrics endpoint. The module is inert unless
+// packaged main/preload authorized the explicit flag + nonce launch.
+import './app/lunar-city/perf-runtime'
 // Dev-only render/state churn counters. MUST precede the `react-dom` import
 // below: react-dom captures the devtools hook at module init, so bippy has to
 // install during THIS import's evaluation or every commit goes unseen

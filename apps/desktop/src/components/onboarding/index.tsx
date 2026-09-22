@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
+import { isLunarCityBrowserPreview } from '@/app/gateway/hooks/use-gateway-boot'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
@@ -211,6 +212,7 @@ export function DesktopOnboardingOverlay({
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
   const targetProfile = onboarding.targetProfile ?? profile
+  const browserPreview = isLunarCityBrowserPreview()
 
   // Async flows retain the initiating route even after the overlay closes.
   const ctx = useMemo<OnboardingContext>(
@@ -279,10 +281,10 @@ export function DesktopOnboardingOverlay({
   }
 
   useEffect(() => {
-    if (enabled || onboarding.requested) {
+    if (!browserPreview && (enabled || onboarding.requested)) {
       void refreshOnboarding(ctx)
     }
-  }, [ctx, enabled, onboarding.requested])
+  }, [browserPreview, ctx, enabled, onboarding.requested])
 
   // The boot bootstrap re-announces `setup.ready` when a background retry of
   // the free-tier set-up succeeds after a failed first attempt. A picker that
@@ -345,12 +347,18 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, onboarding.flow.status, onboarding.manual, onboarding.providers])
 
+  // Direct browser renders are a read-only preview with no provider setup flow.
+  if (browserPreview) {
+    return null
+  }
+
   if (
     !onboarding.manual &&
     (introReveal.phase !== 'hidden' || onboardingSurfaceActive() || shouldPlayFirstRunIntro(onboarding.firstRunSkipped))
   ) {
     return null
   }
+
 
   // Mount from frame 1 so we replace the boot overlay seamlessly. The
   // configured field stays null until the runtime check resolves; only then

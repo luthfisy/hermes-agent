@@ -2393,6 +2393,50 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"paused": set_spawn_paused(bool(params.get("paused", True)))})
 
 
+@method("subagent.status")
+def _(rid, params: dict) -> dict:
+    from tools.delegate_tool import owned_subagent_status
+    subagent_id = _str_param(params, "subagent_id")
+    if not subagent_id:
+        return _err(rid, 4000, "subagent_id required")
+    if (err := _sess_nowait(params, rid)[1]) is not None:
+        return err
+    owner_id = _str_param(params, "session_id")
+    transport, owner = _current_session_steer_authority(owner_id)
+    status = None
+    if transport is not None and owner is not None:
+        status = owned_subagent_status(
+            subagent_id,
+            owner_session_id=owner_id,
+            owner_transport=transport,
+            owner_session_record=owner,
+        )
+    return _ok(rid, {"found": status is not None, "subagent": status})
+
+
+@method("subagent.interrupt")
+def _(rid, params: dict) -> dict:
+    from tools.delegate_tool import interrupt_subagent
+    subagent_id = _str_param(params, "subagent_id")
+    if not subagent_id:
+        return _err(rid, 4000, "subagent_id required")
+    if (err := _sess_nowait(params, rid)[1]) is not None:
+        return err
+    owner_id = _str_param(params, "session_id")
+    transport, owner = _current_session_steer_authority(owner_id)
+    expected_generation = str(params.get("expected_generation") or "").strip()
+    ok = False
+    if expected_generation and transport is not None and owner is not None:
+        ok = interrupt_subagent(
+            subagent_id,
+            owner_session_id=owner_id,
+            owner_transport=transport,
+            owner_session_record=owner,
+            expected_generation=expected_generation,
+        )
+    return _ok(rid, {"found": ok, "subagent_id": subagent_id})
+
+
 @method("subagent.steer")
 def _(rid, params: dict) -> dict:
     """Queue steering text into a live delegated child (the in-flight tool call is never cut). "queued"
@@ -2406,8 +2450,14 @@ def _(rid, params: dict) -> dict:
         return err
     owner_id = _str_param(params, "session_id")
     transport, owner = _current_session_steer_authority(owner_id)
-    queued = transport is not None and owner is not None and steer_subagent(
-        subagent_id, text, owner_session_id=owner_id, owner_transport=transport, owner_session_record=owner)
+    expected_generation = str(params.get("expected_generation") or "").strip()
+    queued = False
+    if expected_generation and transport is not None and owner is not None:
+        queued = steer_subagent(
+            subagent_id, text,
+            owner_session_id=owner_id, owner_transport=transport, owner_session_record=owner,
+            expected_generation=expected_generation,
+        )
     return _ok(rid, {"status": "queued" if queued else "rejected", "subagent_id": subagent_id, "text": text})
 
 
