@@ -87,6 +87,17 @@ _UNEXPECTED_SILENCE_REPLY = (
 )
 
 
+def _silence_allowed_for_turn(source: SessionSource, display_kind: Optional[str]) -> bool:
+    """Allow explicit silence for machinery and optional WhatsApp group participation.
+
+    A direct message is an addressed request, so a bare marker remains visible as a likely
+    failure. Group chatter is different: the agent may legitimately decide it has nothing to add.
+    """
+    return is_machinery_display_kind(display_kind) or (
+        source.platform == Platform.WHATSAPP and source.chat_type in {"group", "supergroup"}
+    )
+
+
 def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
     """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
     text = " ".join(str(prompt or "").split())
@@ -1514,9 +1525,10 @@ class GatewayTurnMixin:
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
-        # opened the chain: an internal follow-up may go silent, a human one must not.
+        # opened the chain: machinery and WhatsApp group turns may go silent; addressed human
+        # turns still surface the warning.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        if _intentional_silence and not _silence_allowed_for_turn(source, _silence_kind):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -3692,7 +3704,7 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+            if _silence_allowed_for_turn(turn_ctx.source, turn_ctx.persist_user_display_kind):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",

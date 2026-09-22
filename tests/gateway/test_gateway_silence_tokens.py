@@ -16,11 +16,11 @@ from gateway.response_filters import (
 )
 
 
-def _source():
+def _source(*, platform=Platform.TELEGRAM, chat_type="group"):
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="-1001",
-        chat_type="group",
+        chat_type=chat_type,
         user_id="12345",
     )
 
@@ -119,6 +119,45 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_whatsapp_group_human_turn_may_suppress_an_intentional_silence_marker(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    source = _source(platform=Platform.WHATSAPP)
+    event = MessageEvent(text="side chatter", source=source, message_id="msg-42")
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "NO_REPLY",
+        "messages": [
+            {"role": "user", "content": "side chatter"},
+            {"role": "assistant", "content": "NO_REPLY"},
+        ],
+        "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        event, source, "agent:main:whatsapp:group:-1001:12345", 1
+    )
+
+    assert response == ""
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_dm_human_turn_keeps_the_visible_silence_fallback(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    source = _source(platform=Platform.WHATSAPP, chat_type="dm")
+    event = MessageEvent(text="question", source=source, message_id="msg-42")
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "NO_REPLY", "messages": [], "tools": [],
+        "history_offset": 0, "last_prompt_tokens": 0, "api_calls": 1, "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        event, source, "agent:main:whatsapp:dm:-1001:12345", 1
+    )
+
+    assert "silence marker" in response
+
+
+@pytest.mark.asyncio
 async def test_internal_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={
@@ -186,6 +225,24 @@ async def test_queued_human_turn_also_gets_the_visible_fallback():
     )
 
     assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_queued_whatsapp_group_turn_suppresses_an_intentional_silence_marker():
+    runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="agent:main:whatsapp:group:-1001:12345",
+        stream_consumer_holder=[None], mute_notification_reply=False,
+        persist_user_display_kind=None, source=_source(platform=Platform.WHATSAPP),
+        _status_thread_metadata=None, event_message_id=None,
+        inbound_message_id="msg-42", run_generation=1,
+    )
+    result = {"final_response": "NO_REPLY", "failed": False}
+
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+
+    runner._deliver_queued_first_response.assert_not_awaited()
 
 
 @pytest.mark.asyncio
