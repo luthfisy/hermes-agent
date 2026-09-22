@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
@@ -302,6 +303,47 @@ _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
 }
 
 
+# ── Subagent spawn reservation/commit (#72550) ────────────────────────────
+# delegate_task normalises its arguments AFTER the guardrail check, so the
+# guardrail cannot know the actual spawn count at before_call() time.  We
+# defer charging to commit_subagent_spawn(), which delegate_tool calls
+# after normalisation.  The active controller is wired in by _execute_tool_calls.
+#
+# Thread-local storage prevents cross-contamination when a synchronous
+# orchestrator subagent (running inside the parent's delegate_task call)
+# overwrites the active guardrail — each thread sees its own controller.
+
+_active_subagent_guardrail: threading.local = threading.local()
+
+
+def _set_active_subagent_guardrail(ctrl: "ToolCallGuardrailController | None") -> None:
+    _active_subagent_guardrail.value = ctrl
+
+
+def commit_subagent_spawn(count: int) -> int:
+    """Commit the *actual* subagent spawn count after delegate_task normalisation.
+
+    Called from delegate_tool.py after JSON-string recovery and
+    max_concurrent_children validation.  Caps at the configured
+    max_subagents so an oversized (then rejection-trimmed) batch does
+    not consume spendable budget.
+
+    Returns the number of subagents actually charged (may be less than
+    ``count`` when the remaining budget is insufficient).
+    """
+    ctrl = getattr(_active_subagent_guardrail, "value", None)
+    if ctrl is None:
+        return count
+    cap = ctrl.config.loop_caps.max_subagents
+    if cap:
+        available = cap - ctrl._turn_subagent_count
+        charged = min(count, available)
+        ctrl._turn_subagent_count += charged
+        return charged
+    ctrl._turn_subagent_count += count
+    return count
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
@@ -550,12 +592,26 @@ class ToolCallGuardrailController:
         spec = _LOOP_CAPS.get(tool_name)
         if spec is None:
             return None
-        cap_field, count_attr, code = spec
-        cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
-        increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
-        if increment and cap and count >= cap:
-            return self._decide("block", code, tool_name, count, signature, cap=cap)
-        setattr(self, count_attr, count + increment)
+        if tool_name == "delegate_task":
+            spawn_count = _subagent_spawn_count(args)
+            if spawn_count == 0:
+                # Control action (list/steer/stop) — spawns nothing. Never
+                # block: once the spawn cap is hit, steering/stopping the
+                # existing children is exactly what should still work.
+                return None
+            cap = self.config.loop_caps.max_subagents
+            count = self._turn_subagent_count
+            if cap and count >= cap:
+                return self._decide("block", "loop_subagent_cap", tool_name, count, signature, cap=cap)
+            # Defer charging: commit_subagent_spawn() is called after
+            # delegate_tool normalisation (JSON-string recovery +
+            # max_concurrent_children validation).  (#72550)
+            return None
+        cap = self.config.loop_caps.max_web_searches
+        count = self._turn_web_search_count
+        if cap and count >= cap:
+            return self._decide("block", "loop_web_search_cap", tool_name, count, signature, cap=cap)
+        self._turn_web_search_count += 1
         return None
 
 

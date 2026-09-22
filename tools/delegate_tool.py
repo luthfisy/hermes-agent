@@ -18,6 +18,9 @@ from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
 from utils import is_truthy_value
+from agent.tool_guardrails import commit_subagent_spawn
+from toolsets import TOOLSETS
+from agent.interrupt_compat import request_hard_interrupt
 
 logger = logging.getLogger(__name__)
 
@@ -509,6 +512,22 @@ def delegate_task(
     if err:
         return tool_error(err)
 
+    charged = commit_subagent_spawn(len(task_list))
+    rejected_tasks = []
+    if charged < len(task_list):
+        # Report dropped task labels separately: aggregation requires each
+        # ``results`` entry to be a child-result mapping with task_index.
+        rejected_tasks = [
+            {
+                "task_index": index,
+                "goal": task.get("goal", ""),
+                "status": "rejected",
+                "reason": "per-turn subagent spawn cap reached",
+            }
+            for index, task in enumerate(task_list[charged:], start=charged)
+        ]
+        task_list = task_list[:charged]
+
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
@@ -527,7 +546,7 @@ def delegate_task(
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
-        live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        live_deleg_id, live_writers, live_paths, *origin, overall_start, rejected_tasks=rejected_tasks,
     )
     return _run_batch(batch, background)
 
