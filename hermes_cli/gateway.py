@@ -2872,6 +2872,45 @@ def legacy_launchd_labels_for_install(exclude=()) -> list[str]:
     return sorted(labels)
 
 
+# Resource-pointer env vars the ``hermes`` wrapper exports so packaged installs (Homebrew, Nix)
+# can locate bundled plugins/skills/locales/TUI assets that live outside site-packages (e.g.
+# ``<prefix>/share/hermes-agent/plugins``). launchd and systemd start the venv python directly,
+# bypassing the wrapper, so these must be baked into the generated service definition — otherwise
+# the supervised gateway falls back to the in-repo ``plugins/`` path, discovers zero bundled
+# platform manifests, and logs "No adapter available for <platform>". See #85357.
+_BUNDLED_RESOURCE_ENV_VARS = (
+    "HERMES_BUNDLED_PLUGINS",
+    "HERMES_BUNDLED_SKILLS",
+    "HERMES_BUNDLED_LOCALES",
+    "HERMES_OPTIONAL_SKILLS",
+    "HERMES_TUI_DIR",
+)
+
+
+def _bundled_resource_env_pairs(fallback: dict[str, str] | None = None) -> list[tuple[str, str]]:
+    """Return ``(name, value)`` for each bundled-resource env var to bake into a service unit.
+
+    The live wrapper environment wins; for any var the wrapper did not export, fall back to
+    ``fallback`` — the pointers parsed from the unit already on disk. ``generate_*`` runs on every
+    ordinary start (via the ``refresh_*_if_needed`` / ``*_is_current`` chokepoints), not just first
+    install, so without this a Homebrew/Nix user who installs through the wrapper (vars present) and
+    later starts the gateway from a context where the wrapper isn't in the environment — venv python
+    invoked directly, a GUI/desktop launch, a supervised restart — would get the unit rewritten with
+    the ``HERMES_BUNDLED_*`` pointers silently stripped, and #85357 comes back with no error.
+    Carrying the on-disk values forward makes regeneration idempotent for those pointers instead.
+
+    Empty on a standard pip/uv install with no prior unit, so the generated unit is byte-for-byte
+    unchanged for those deployments.
+    """
+    fallback = fallback or {}
+    pairs: list[tuple[str, str]] = []
+    for name in _BUNDLED_RESOURCE_ENV_VARS:
+        value = os.environ.get(name, "").strip() or fallback.get(name, "").strip()
+        if value:
+            pairs.append((name, value))
+    return pairs
+
+
 def _detect_venv_dir() -> Path | None:
     """Active virtualenv dir: ``sys.prefix``, then ``VIRTUAL_ENV`` (uv sets it without changing
     sys.prefix), then .venv/venv under PROJECT_ROOT; None if none found."""

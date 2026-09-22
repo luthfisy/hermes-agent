@@ -152,10 +152,32 @@ def _service_venv_dir() -> str:
     return str(detected_venv) if detected_venv else str(_gw().PROJECT_ROOT / "venv")
 
 
+def _prior_bundled_systemd_env(system: bool = False) -> dict[str, str]:
+    """``HERMES_BUNDLED_*`` pointers already baked into the installed systemd unit, or ``{}``.
+
+    Reads them back through ``_unit_environment_value`` (the same parser refresh/compare use), which
+    undoes systemd's ``\\"``/``\\\\``/``%%`` quoting, so a value we previously wrote round-trips."""
+    path = _gw().get_systemd_unit_path(system=system)
+    found: dict[str, str] = {}
+    for name in _gw()._BUNDLED_RESOURCE_ENV_VARS:
+        value = _gw()._unit_environment_value(path, name)
+        if value and value.strip():
+            found[name] = value.strip()
+    return found
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = _gw().get_python_path()
     working_dir = _gw()._stable_service_working_dir()
     venv_dir = _gw()._service_venv_dir()
+
+    # Propagate the wrapper's bundled-resource pointers as extra ``Environment=`` lines (empty →
+    # no-op). Carry forward any already in the on-disk unit so an ordinary start from a non-wrapper
+    # environment doesn't strip them (see #85357). ``_systemd_env_line`` handles the quoting.
+    bundled_env_block = "".join(
+        _systemd_env_line(name, value)
+        for name, value in _gw()._bundled_resource_env_pairs(_prior_bundled_systemd_env(system=system))
+    )
 
     path_entries = _gw()._build_service_path_dirs()
     if not system:
@@ -226,7 +248,7 @@ WorkingDirectory={working_dir}
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Environment="HERMES_SUPERVISED_CHILD=1"
-Restart=always
+{bundled_env_block}Restart=always
 RestartSec=5
 RestartForceExitStatus={_gw().GATEWAY_SERVICE_RESTART_EXIT_CODE}
 SuccessExitStatus={_gw().GATEWAY_SERVICE_RESTART_EXIT_CODE}
