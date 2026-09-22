@@ -33,6 +33,7 @@ import {
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
+import { updateAllFromLauncher } from '@/store/update-all-launch'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -91,9 +92,11 @@ export function useDesktopIntegrations({
     // default pointed a Mac at its remote Linux backend and left the app itself
     // silently stale (#70266).
     const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow('client'))
+    const unsubscribeUpdateAll = window.hermesDesktop?.onUpdateAllRequested?.(updateAllFromLauncher)
 
     return () => {
       unsubscribe?.()
+      unsubscribeUpdateAll?.()
       stopUpdatePoller()
       stopMcpHealthChecker()
     }

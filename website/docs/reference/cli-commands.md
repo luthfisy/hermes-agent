@@ -98,6 +98,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes serve` | Start the Hermes backend server (headless; powers the desktop app and remote backends). |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
+| `hermes desktop --update-all` | Open/signal an existing Desktop build to update its registered instances. No pre-update build; exit status reports dispatch, not fleet completion. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
 | `hermes --version` | Show version information. |
