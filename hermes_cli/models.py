@@ -1571,19 +1571,43 @@ def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base
     return merge_profile_catalog(normalized, profile, live)
 
 
+def _live_catalog_is_authoritative(normalized: str) -> bool:
+    """Whether ``normalized``'s profile treats a successful live listing as its full
+    catalog (see ``ProviderProfile.live_catalog_mode``). Registry misses fail closed
+    to union behavior."""
+    try:
+        from providers import get_provider_profile
+        return getattr(get_provider_profile(normalized), "live_catalog_mode", "union") == "authoritative"
+    except Exception:
+        return False
+
+
 def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
-    picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
-    if not live:
+    picker will later show. A failed/absent live fetch (None) falls back to ``fallback_models``
+    (None when the profile has none); a profile with ``live_catalog_mode="authoritative"``
+    replaces its curated floor on a successful listing instead of resurrecting retired ids."""
+    if live is None:
         rows = list(profile.fallback_models) if profile.fallback_models else None
     else:
-        curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
-        if not curated:
+        markers = getattr(profile, "live_excluded_markers", None) or ()
+        if live and markers:
+            live = [
+                m for m in live
+                if not any(marker in str(m).lower().rsplit("/", 1)[-1] for marker in markers)
+            ]
+        if getattr(profile, "live_catalog_mode", "union") == "authoritative":
             rows = live
+        elif not live:
+            rows = list(profile.fallback_models) if profile.fallback_models else None
         else:
-            primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
-            rows = _merge_unique(primary, secondary, key=_model_dedup_key)
+            curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
+            if not curated:
+                rows = live
+            else:
+                primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
+                rows = _merge_unique(primary, secondary, key=_model_dedup_key)
     return _drop_delisted_opencode_models(normalized, rows)
 
 
@@ -1877,6 +1901,7 @@ def cached_provider_model_ids(
     if not normalized:
         return []
     is_ollama = normalized == "ollama"
+    accepts_empty_cache = is_ollama or _live_catalog_is_authoritative(normalized)
     if is_ollama:
         ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
 
@@ -1885,7 +1910,7 @@ def cached_provider_model_ids(
     entry = cache.get(normalized)
     now = time.time()
 
-    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=accepts_empty_cache):
         age = now - entry["at"]
         if age < ttl_seconds:
             return list(entry["models"])
@@ -1901,7 +1926,7 @@ def cached_provider_model_ids(
         # SWR window is still served (hour-old catalog beats an empty picker) while a daemon thread
         # warms the next open; a cold row returns [] and the caller falls back to its curated list.
         _spawn_swr_refresh(normalized)
-        if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+        if _cache_entry_valid(entry, fp, allow_empty=accepts_empty_cache):
             return [model for model in entry["models"]
                     if not _model_requires_account_discovery(normalized, model)]
         return []
@@ -1911,6 +1936,11 @@ def cached_provider_model_ids(
         _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
         return list(live)
 
+    if _live_catalog_is_authoritative(normalized):
+        # An authoritative catalog's successful empty listing replaces stale rows;
+        # fetch failures degrade to their non-empty offline floor before reaching here.
+        _store_cache_entry(normalized, _cache_entry(fp, [], now), cache)
+        return []
     if is_ollama:
         if _ollama_native_probe_reachable():
             # A reachable empty native catalog is authoritative; do not resurrect a stale disk catalog.
