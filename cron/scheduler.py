@@ -40,7 +40,7 @@ from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import fallback_halt_active, get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
@@ -100,15 +100,18 @@ def _set_cron_session_title(session_db, session_id, base_title):
 
 
 def _fallback_chain_phrase() -> str:
-    """Backup-provider clause for a provider-failure notice: "the backups failed too" vs "none
-    configured" (most installs). Fails open to the former if config can't be read — never crash
-    delivery.
+    """Backup-provider clause for a provider-failure notice: halted, exhausted, or absent.
+
+    Fails open to the exhausted wording if config can't be read — never crash delivery.
     """
     try:
         cfg = load_config() or {}
         chain = get_fallback_chain(cfg)
+        halt_active, halt_message = fallback_halt_active()
     except Exception:
         return "No backup provider succeeded either."
+    if halt_active:
+        return halt_message
     if chain:
         return "No backup provider succeeded either."
     return (
@@ -1724,6 +1727,12 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         if not (is_auth or is_transient_net):
             raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
+        from hermes_cli.fallback_config import fallback_halt_active
+
+        halt_active, halt_message = fallback_halt_active()
+        if halt_active:
+            logger.warning("Job '%s': %s Primary provider error: %s", job_id, halt_message, resolve_exc)
+            raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
         logger.warning(
             "Job '%s': primary provider resolve failed (%s: %s), trying fallback",
             job_id, "auth" if is_auth else "transient network", resolve_exc)

@@ -2006,6 +2006,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    from hermes_cli.fallback_config import fallback_halt_active
+
+    halt_active, halt_message = fallback_halt_active()
+    if halt_active:
+        agent._emit_diagnostic_status(halt_message)
+        return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
