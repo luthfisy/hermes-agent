@@ -2074,7 +2074,7 @@ requires-dist = [
     { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.0.13.4" },
     { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.4.8" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
-    { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.8.3,<0.9" },
+    { name = "nemo-relay", marker = "(platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.9,<0.10" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.4.3" },
     { name = "onnxruntime", marker = "extra == 'wake'", specifier = "==1.27.0" },
@@ -2942,17 +2942,17 @@ wheels = [
 
 [[package]]
 name = "nemo-relay"
-version = "0.8.3"
+version = "0.9.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/03/73/ac90ccb08faca19b2c8470bdd4d5b9bae89fc5edfde8dae72ee7b1a2d8df/nemo_relay-0.8.3.tar.gz", hash = "sha256:3670c0689f0709354068a1460131e6f01ea44cd7c2b2186930dd20b23cd079ff", size = 1615748, upload-time = "2026-09-02T03:32:45.828Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/da/5020a1d7fd393b05ab83a2883e5d3ac119749d7c8a5cd90e5df48fe04873/nemo_relay-0.9.1.tar.gz", hash = "sha256:03c2d7fb4d74836306eb8f9432ad0d86e4c1ef2e040259a527d67340f9d830c6", size = 1704677, upload-time = "2026-09-22T17:04:56.866Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/6a/199c2061358684550780bfc3184e588cea6533ec697ae6fa2f36f8881412/nemo_relay-0.8.3-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:2b0a59b8a95d6ed9de099e471318af672b51426a89c2019766ac889b1e23f1d4", size = 10200865, upload-time = "2026-09-02T03:32:15.373Z" },
-    { url = "https://files.pythonhosted.org/packages/df/90/3486d10c2003cda3bd4ce98d34e40f283faf87dcb1292cddca356a86c6be/nemo_relay-0.8.3-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0c84a93ad0d4bea9a7bf67917874cd4eee24694764456a5f94c9609b1df42904", size = 9199160, upload-time = "2026-09-02T03:32:17.467Z" },
-    { url = "https://files.pythonhosted.org/packages/18/00/15705b941df64443e50c49139140dd84603f23125ab48f9c122942911439/nemo_relay-0.8.3-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:10b08a939678d8f54ad02e5fb086454ffad15f269eae4854e9597956dc96b176", size = 9760299, upload-time = "2026-09-02T03:32:19.255Z" },
-    { url = "https://files.pythonhosted.org/packages/00/d3/2dac6a938713cfb6f59d8f3e82e991a1635a666f25f8d7fed8a3fa9c56b7/nemo_relay-0.8.3-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:c2fba57f39100068244f8fcaffbdd801a0a8ccc7b9dbee330bb087f3970d8ccc", size = 11287368, upload-time = "2026-09-02T03:32:21.359Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/d2/f61379d244139306c3832082d446ad6167f50108969b3e8720e62e1b2ae5/nemo_relay-0.8.3-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:ae6804050b309a12dae5a7afc8c85b29b601c2c4a4257d365a998b774a2e7d16", size = 11717569, upload-time = "2026-09-02T03:32:23.321Z" },
-    { url = "https://files.pythonhosted.org/packages/db/96/333f62b4176450154a8908f619e3323b70b43c3b733a0a0752ba3b9232b1/nemo_relay-0.8.3-cp311-abi3-win_amd64.whl", hash = "sha256:b1f006e50e44967821f3a77a2e0001eed8154db01168abcc0681891f9c339fed", size = 9656294, upload-time = "2026-09-02T03:32:25.904Z" },
-    { url = "https://files.pythonhosted.org/packages/fe/bd/37ab6038111d3cdec1858e584ef9e8fdfe0db07aa6073d66d1303b18d791/nemo_relay-0.8.3-cp311-abi3-win_arm64.whl", hash = "sha256:0d3db4f0a9d1f909acbf659612bfb9859e304b53cd425ef8e0f60ca851e85173", size = 9235572, upload-time = "2026-09-02T03:32:28.042Z" },
+    { url = "https://files.pythonhosted.org/packages/35/aa/8613d24df36f92aeba1abc042ae3a859b8729f7d7b42ba81c48cfa507264/nemo_relay-0.9.1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:fb4083c95b059a265b3b4cbc20d68ddb1de6bfa74879943baabdff4e2ca9965f", size = 10326966, upload-time = "2026-09-22T17:04:15.191Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/d6/bd235323fcf5b29423855704c3c2c7af2f259fad2b6fde99054fce8e25c5/nemo_relay-0.9.1-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:60b82501117cfe6990258b25fe30e93e650bdbd3dd750a9cf00ba01d764847d5", size = 9252458, upload-time = "2026-09-22T17:04:17.45Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/64/97dd5f4f8ef68cbb2df6133cc409e27b094cdf062cd2de4e5bbf1d427c64/nemo_relay-0.9.1-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4e46429e65da2d38b02b8481fd31592710e006b358551f9a97a1cb9ebe5186f2", size = 9857873, upload-time = "2026-09-22T17:04:24.908Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/ca/e3e14c973517f4e21fd8a2b62e9f8bddbbe6bb9ccec1f9c64c5e22c36d55/nemo_relay-0.9.1-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:9f7e3ca7512e6b7c12a729b88353e9fce083f099f17f7e000e6fef86937617c6", size = 11424081, upload-time = "2026-09-22T17:04:27.188Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/18/8ffaacdf3a68a3e33e0ad84d863fd32920145157b4bdccde8e243a8db10b/nemo_relay-0.9.1-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:3863cf203c26a8359607359ec2dceb86b9e389efa6b4462b841d72edc24fc7fd", size = 11891117, upload-time = "2026-09-22T17:04:29.891Z" },
+    { url = "https://files.pythonhosted.org/packages/25/0f/45585ad9c4cf3a03bbefdd7d89e012f958fcaff95c98f245a7dfc4936c27/nemo_relay-0.9.1-cp311-abi3-win_amd64.whl", hash = "sha256:84ac30ca535e1cee3be974fb6dddebb7cde1107e5afaba758df45de3fc4324da", size = 9819429, upload-time = "2026-09-22T17:04:32.349Z" },
+    { url = "https://files.pythonhosted.org/packages/33/d0/299a0f06fc4ff9880f1c2bf0c7e55b7ab092ac7b856fa50b8cf2e221c049/nemo_relay-0.9.1-cp311-abi3-win_arm64.whl", hash = "sha256:ce862a88e3901eab6641b2e8ca6d5122350158029b02be309f5505925626ef04", size = 9404034, upload-time = "2026-09-22T17:04:34.511Z" },
 ]
 
 [[package]]
