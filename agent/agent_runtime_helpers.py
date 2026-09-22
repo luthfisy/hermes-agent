@@ -1217,9 +1217,96 @@ def _revert_credential_rotation(agent) -> None:
     agent._credential_pool_revert_id = None
 
 
+def _restore_pre_agent_primary(agent) -> Optional[bool]:
+    """Retry a primary that failed before AIAgent construction.
+
+    Gateway startup fallback happens before the agent can snapshot its configured primary, so a
+    long-lived Desktop agent would otherwise promote the fallback to permanent primary until
+    process restart. None means this agent did not start through that path; False means the
+    intended primary is still unavailable; True means it was restored in-place.
+    """
+    intent = getattr(agent, "_pre_agent_primary", None)
+    if not isinstance(intent, dict):
+        return None
+    model = str(intent.get("model") or "").strip()
+    resolve_kwargs = intent.get("resolve_kwargs")
+    if not model or not isinstance(resolve_kwargs, dict):
+        agent._pre_agent_primary = None
+        return None
+
+    try:
+        from hermes_cli.auth import AuthError
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(**resolve_kwargs)
+    except AuthError as exc:
+        logger.debug("Pre-agent primary is still unavailable: %s", exc)
+        return False
+    except Exception as exc:
+        # A malformed/temporarily unreadable primary must never tear down a working fallback.
+        logger.warning("Pre-agent primary re-resolution failed; staying on fallback: %s", exc)
+        return False
+
+    primary_pool = runtime.get("credential_pool") if isinstance(runtime, dict) else None
+    try:
+        if (
+            primary_pool is not None
+            and primary_pool.has_credentials()
+            and not primary_pool.has_available(model=model)
+        ):
+            return False
+    except Exception:
+        logger.debug("Pre-agent primary pool probe failed; staying on fallback", exc_info=True)
+        return False
+
+    overrides = intent.get("overrides")
+    if isinstance(overrides, dict):
+        runtime.update({k: v for k, v in overrides.items() if v})
+
+    requested = str(
+        runtime.get("requested_provider")
+        or resolve_kwargs.get("requested")
+        or runtime.get("provider")
+        or ""
+    ).strip()
+    if not requested:
+        return False
+
+    # switch_model is the canonical in-place runtime rebuild. It treats a provider change as
+    # a deliberate user switch and prunes matching fallback entries, so preserve the configured
+    # chain across this automatic recovery.
+    fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+    try:
+        switch_model(
+            agent,
+            model,
+            requested,
+            api_key=runtime.get("api_key") or "",
+            base_url=runtime.get("base_url") or "",
+            api_mode=runtime.get("api_mode") or "",
+            capabilities=runtime.get("capabilities"),
+        )
+    except Exception as exc:
+        logger.warning("Pre-agent primary restore failed; staying on fallback: %s", exc)
+        return False
+
+    agent._fallback_chain = fallback_chain
+    agent._fallback_model = fallback_chain[0] if fallback_chain else None
+    agent._fallback_index = 0
+    agent._unavailable_fallback_keys = set()
+    agent._pre_agent_primary = None
+    agent._rate_limited_until = 0
+    agent._rate_limit_backoff_count = 0
+    agent._restore_wait_logged = False
+    logger.info("Pre-agent primary restored for new turn: %s (%s)", agent.model, agent.provider)
+    return True
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
+    pre_agent_restore = _restore_pre_agent_primary(agent)
+    if pre_agent_restore is not None:
+        return pre_agent_restore
     if not agent._fallback_activated:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks.

@@ -15,6 +15,7 @@ later than it does today.
 """
 
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
@@ -230,6 +231,86 @@ class TestNextAvailableAt:
 # =============================================================================
 # restore_primary_runtime() gate
 # =============================================================================
+
+def test_pre_agent_fallback_retries_configured_primary_without_restart(monkeypatch):
+    """#119195: a startup fallback must not become the cached agent's permanent primary."""
+    from agent import agent_runtime_helpers as runtime_helpers
+    from hermes_cli.auth import AuthError
+
+    chain = [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+    ]
+    agent = SimpleNamespace(
+        model="deepseek/deepseek-v4-pro",
+        provider="openrouter",
+        _pre_agent_primary={
+            "model": "claude-opus-5",
+            "resolve_kwargs": {
+                "requested": "anthropic",
+                "target_model": "claude-opus-5",
+            },
+            "overrides": {},
+        },
+        _fallback_chain=list(chain),
+        _fallback_model=chain[0],
+        _fallback_index=2,
+        _fallback_activated=True,
+        _provider_fallback_active=True,
+        _provider_fallback_route=("deepseek/deepseek-v4-pro", "openrouter"),
+        _rate_limited_until=123.0,
+        _rate_limit_backoff_count=3,
+        _restore_wait_logged=True,
+        _unavailable_fallback_keys={("openai-codex", "gpt-5.6-sol")},
+    )
+
+    attempts = {"count": 0}
+
+    def fake_resolve(**kwargs):
+        assert kwargs["requested"] == "anthropic"
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise AuthError("subscription quota still exhausted")
+        return {
+            "provider": "anthropic",
+            "requested_provider": "anthropic",
+            "api_key": "anthropic-token",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        }
+
+    def fake_switch(target, model, provider, **_kwargs):
+        target.model = model
+        target.provider = provider
+        # Mirror switch_model's fallback bookkeeping so the helper must restore
+        # the configured chain after this automatic recovery.
+        target._fallback_chain = []
+        target._fallback_model = None
+        target._fallback_activated = False
+        target._provider_fallback_active = False
+        target._provider_fallback_route = None
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve,
+    )
+    monkeypatch.setattr(runtime_helpers, "switch_model", fake_switch)
+
+    assert runtime_helpers.restore_primary_runtime(agent) is False
+    assert agent.model == "deepseek/deepseek-v4-pro"
+    assert agent._pre_agent_primary is not None
+
+    assert runtime_helpers.restore_primary_runtime(agent) is True
+    assert agent.model == "claude-opus-5"
+    assert agent.provider == "anthropic"
+    assert agent._pre_agent_primary is None
+    assert agent._fallback_chain == chain
+    assert agent._fallback_model == chain[0]
+    assert agent._fallback_index == 0
+    assert agent._rate_limited_until == 0
+    assert agent._rate_limit_backoff_count == 0
+    assert agent._restore_wait_logged is False
+
 
 class TestResetAwareRestoreGate:
     FB = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}

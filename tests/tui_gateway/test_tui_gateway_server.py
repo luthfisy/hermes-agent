@@ -20501,6 +20501,33 @@ class TestResolveRuntimeWithFallback:
         assert resolution.selected_model == "deepseek/deepseek-v4-pro"
         assert resolution.used_fallback is True
 
+    def test_model_runtime_preserves_primary_intent_when_startup_falls_back(self, monkeypatch):
+        """#119195: a cached gateway agent must remember the configured primary."""
+        fallback_runtime = {
+            "provider": "openrouter",
+            "api_key": "or-token",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+        monkeypatch.setattr(
+            server,
+            "_resolve_runtime_with_fallback",
+            lambda _kwargs: server._RuntimeFallbackResolution(
+                fallback_runtime, "deepseek/deepseek-v4-pro", True
+            ),
+        )
+
+        model, runtime = server._resolve_agent_model_runtime(
+            {"model": "claude-opus-5", "provider": "anthropic"},
+            None,
+        )
+
+        assert model == "deepseek/deepseek-v4-pro"
+        intent = runtime["_pre_agent_primary"]
+        assert intent["model"] == "claude-opus-5"
+        assert intent["resolve_kwargs"]["requested"] == "anthropic"
+        assert intent["resolve_kwargs"]["target_model"] == "claude-opus-5"
+
     def test_quota_auth_error_is_logged_as_rate_limited_not_auth_failed(self, monkeypatch, caplog):
         """#117482 sibling surface: a 429/quota AuthError on the primary reads as quota in the
         gateway's fallback log, never as an auth failure."""
