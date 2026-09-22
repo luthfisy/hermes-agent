@@ -18,7 +18,7 @@ const latestBoundary = (...values: (number | undefined)[]) => {
 
 const normalizedTimelineText = (message: ChatMessage) => chatMessageText(message).replace(/\s+/g, ' ').trim()
 
-const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
+export const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage) => {
   if (stored.id === local.id) {
     return true
   }

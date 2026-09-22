@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -13,7 +13,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
-import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
+import type { SessionInfo, SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -28,6 +28,7 @@ import {
   overlayConcurrentMessageChanges,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
+  reconcileDurableHistory,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
@@ -874,6 +875,67 @@ describe('preserveLocalPendingTurnMessages', () => {
     ]
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('keeps a page-omitted prompt ahead of its completed reply', () => {
+    const prompt = msg('user-optimistic', 'user', 'recombine the skills', { timestamp: 100 })
+    const reply = msg('assistant-stream-live', 'assistant', 'recombined', {
+      timestamp: 110,
+      pending: false,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' },
+        textPart('recombined')
+      ]
+    })
+    const toolRounds: SessionMessage[] = Array.from({ length: 60 }, (_, index): SessionMessage[] => [
+      {
+        id: index * 2 + 2,
+        role: 'assistant',
+        content: '',
+        timestamp: 101 + index / 100,
+        tool_calls: [{ id: `call-${index}`, function: { name: 'terminal', arguments: '{}' } }]
+      },
+      { id: index * 2 + 3, role: 'tool', tool_call_id: `call-${index}`, content: 'done', timestamp: 101 + index / 100 }
+    ]).flat()
+    // The 120-row latest page begins inside this turn, beyond its user row.
+    const rows: SessionMessage[] = [
+      ...toolRounds,
+      { id: 122, role: 'assistant', content: 'recombined', timestamp: 110 }
+    ]
+    const hydrated = toChatMessages(rows.slice(-120))
+
+    const result = reconcileDurableHistory(hydrated, [prompt, reply])
+    expect(result.map(message => message.id)).toEqual([prompt.id, ...hydrated.map(message => message.id)])
+    expect(reconcileDurableHistory(hydrated, result).map(message => message.id)).toEqual(result.map(message => message.id))
+
+    const withPrompt = toChatMessages([{ id: 1, role: 'user', content: 'recombine the skills', timestamp: 100 }, ...rows])
+    expect(reconcileDurableHistory(withPrompt, result).filter(message => message.role === 'user')).toHaveLength(1)
+  })
+
+  it('does not move an accepted but not-yet-persisted prompt ahead of an older page', () => {
+    const prompt = msg('user-new', 'user', 'new question', { timestamp: 200 })
+    const page = [msg('old-reply', 'assistant', 'earlier answer', { timestamp: 100 })]
+    const projected = appendLiveSessionProjection(page, {
+      session_id: 'runtime-1',
+      inflight: { user: 'new question', streaming: true }
+    }, [prompt])
+
+    expect(projected.map(message => message.id)).toEqual(['old-reply', 'user-inflight-runtime-1', 'assistant-stream-runtime-1'])
+  })
+
+  it('does not anchor an uncommitted prompt to an older identical reply', () => {
+    const previous = [
+      msg('user-optimistic', 'user', 'new question', { timestamp: 100 }),
+      msg('assistant-stream-live', 'assistant', 'same reply', { timestamp: 110, pending: false })
+    ]
+    const hydrated = [
+      msg('old-reply', 'assistant', 'same reply', { timestamp: 90 }),
+      msg('other-reply', 'assistant', 'different reply', { timestamp: 115 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(hydrated, previous).map(message => message.id)).toEqual([
+      'old-reply', 'other-reply', 'user-optimistic'
+    ])
   })
 
   it('still keeps a genuinely uncommitted optimistic turn when a marker is present', () => {

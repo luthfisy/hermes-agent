@@ -1,5 +1,5 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
-import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
+import { referenceRe, textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
 import {
   assistantTextPart,
@@ -9,6 +9,7 @@ import {
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
+import { assistantTimelineMatch } from '@/lib/chat-messages/reconciliation'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -817,6 +818,62 @@ export function preserveLocalPendingTurnMessages(
   const withReplacements =
     replacements.size > 0 ? nextMessages.map(message => replacements.get(message.id) ?? message) : nextMessages
 
+  // A latest page can start inside a turn, beyond its optimistic user row.
+  // Restore only prompts whose cached reply is represented after their send
+  // boundary. A queued next prompt must not prevent restoring the current one,
+  // but neither a later user nor an older identical reply is a valid anchor.
+  const insertions = new Map<number, ChatMessage[]>()
+  const anchored = new Set<ChatMessage>()
+
+  for (const prompt of preserved) {
+    if (prompt.role !== 'user' || !validPromptBoundary(prompt.timestamp)) {
+      continue
+    }
+
+    const submittedAt = prompt.timestamp
+    const localTail = previousMessages.slice(previousMessages.indexOf(prompt) + 1)
+    const nextLocalUser = localTail.findIndex(message => message.role === 'user')
+    const nextPrompt = nextLocalUser < 0 ? undefined : localTail[nextLocalUser]
+    // A queued prompt may be sent before the current answer finishes. Its
+    // timestamp is not an upper bound on that answer's persisted rows.
+    const until =
+      nextPrompt && !nextPrompt.id.startsWith('user-queued-') && validPromptBoundary(nextPrompt.timestamp)
+        ? nextPrompt.timestamp
+        : undefined
+    const localReplies = (nextLocalUser < 0 ? localTail : localTail.slice(0, nextLocalUser))
+      .filter(message => message.role === 'assistant')
+    const anchor = withReplacements.findIndex(message =>
+      validPromptBoundary(message.timestamp) && message.timestamp >= submittedAt
+    )
+
+    if (anchor < 0) {
+      continue
+    }
+
+    const suffix = withReplacements.slice(anchor)
+    const nextBoundary = suffix.findIndex(message =>
+      message.role === 'user' ||
+      (until !== undefined && validPromptBoundary(message.timestamp) && message.timestamp >= until)
+    )
+    const turn = nextBoundary < 0 ? suffix : suffix.slice(0, nextBoundary)
+    const replyPresent = localReplies.some(reply =>
+      turn.some(message => message.role === 'assistant' && assistantTimelineMatch(message, reply)) ||
+      durableFoldCoversLiveResponse(turn, reply)
+    )
+
+    if (replyPresent) {
+      insertions.set(anchor, [...(insertions.get(anchor) ?? []), prompt])
+      anchored.add(prompt)
+    }
+  }
+
+  if (anchored.size) {
+    return [
+      ...withReplacements.flatMap((message, index) => [...(insertions.get(index) ?? []), message]),
+      ...preserved.filter(message => !anchored.has(message))
+    ]
+  }
+
   return preserved.length ? [...withReplacements, ...preserved] : withReplacements
 }
 
@@ -839,7 +896,26 @@ type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
-export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
+const validPromptBoundary = (value: number | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0
+
+/** The wire prompt may hold refs that the optimistic bubble lifted into chips. */
+function cachedPromptMatches(message: ChatMessage, wireText: string): boolean {
+  const text = chatMessageText(message)
+  const refs = (value: string, attachments: string[] = []) =>
+    [...new Set([...attachments, ...(value.match(referenceRe()) ?? [])])].join('\n')
+
+  return (
+    textWithoutReferenceLines(text) === textWithoutReferenceLines(wireText) &&
+    refs(text, message.attachmentRefs) === refs(wireText)
+  )
+}
+
+export function appendLiveSessionProjection(
+  messages: ChatMessage[],
+  projection: LiveSessionProjection,
+  previousMessages: ChatMessage[] = []
+): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
   const inflightStreaming = Boolean(projection.inflight?.streaming)
@@ -882,6 +958,37 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
 
   const sessionId = projection.session_id || 'session'
   const projected: ChatMessage[] = []
+  // A long running turn can fill the latest history page entirely with its
+  // assistant/tool rows. Its persisted user row then falls outside the page,
+  // even though the warm cache still knows the send boundary. Restore that
+  // cached prompt ahead of the newer rows; do not create a second inflight
+  // bubble at the tail. A page from BEFORE a newly accepted prompt has older
+  // timestamps and must retain the normal append behavior.
+  const cachedPrompt = previousMessages.findLast(message =>
+    message.role === 'user' &&
+    message.id.startsWith('user-') &&
+    !message.id.startsWith('user-queued-') &&
+    cachedPromptMatches(message, inflightUser)
+  )
+  const trailing = cachedPrompt ? previousMessages.slice(previousMessages.indexOf(cachedPrompt) + 1) : []
+  const anchorOmittedPrompt = Boolean(
+    inflightUser &&
+    cachedPrompt &&
+    validPromptBoundary(cachedPrompt.timestamp) &&
+    messages.length &&
+    !messages.some(message => message.role === 'user') &&
+    validPromptBoundary(messages[0].timestamp) &&
+    messages[0].timestamp >= cachedPrompt.timestamp &&
+    messages.some(message => message.role === 'assistant') &&
+    !trailing.some(message =>
+      (message.role === 'user' &&
+        !(queuedUser && message.id.startsWith('user-queued-') && cachedPromptMatches(message, queuedUser))) ||
+      (message.role === 'assistant' && !isLiveTailRow(message))
+    )
+  )
+  if (anchorOmittedPrompt && cachedPrompt) {
+    messages = [cachedPrompt, ...messages]
+  }
   // A turn normally persists its user row before inference begins. session.resume
   // then returns that stored row *and* the still-live inflight projection; adding
   // both makes a backgrounded prompt appear twice when its session is reopened.
@@ -917,7 +1024,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     )
 
   const inflightUserAlreadyPersisted =
-    projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
+    anchorOmittedPrompt || projection[safelyPersistedInflightUser] === true ||
+    (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
     // A synthetic starting prompt (process_complete, hidden, …) carries the

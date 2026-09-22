@@ -148,6 +148,54 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+it('keeps an omitted attached prompt before its tool stream on warm resume', async () => {
+  const durable = history(Array.from({ length: 60 }, (_, index) => `Round ${index}`))
+  const page = durable.slice(-120)
+  const snapshot: SessionResumeResult = {
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    message_count: durable.length,
+    running: true,
+    inflight: { user: '@image:/fixture.png\nInspect both phases', assistant: 'Working.', streaming: true }
+  }
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: page })
+  const { result } = mount(snapshot)
+
+  act(() => {
+    result.current.cache.activeSessionIdRef.current = runtimeId
+    result.current.cache.selectedStoredSessionIdRef.current = storedId
+    result.current.cache.updateSessionState(runtimeId, state => ({
+      ...state,
+      messages: [
+        {
+          id: 'user-optimistic', role: 'user', parts: [{ type: 'text', text: prompt }],
+          timestamp: 1, attachmentRefs: ['@image:/fixture.png']
+        },
+        {
+          id: 'assistant-stream-live', role: 'assistant', pending: true, timestamp: 2,
+          parts: [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'read_file', result: 'fixture' }]
+        }
+      ]
+    }), storedId)
+  })
+  await act(async () => {
+    await result.current.actions.resumeSession(storedId, true)
+  })
+  const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+  expect(rows.findIndex(row => row.role === 'user')).toBe(0)
+  expect(rows.filter(row => row.role === 'user')).toHaveLength(1)
+  expect(rows[0].attachmentRefs).toEqual(['@image:/fixture.png'])
+  expect(rows.slice(1).some(row => row.role === 'assistant')).toBe(true)
+
+  await act(async () => {
+    await result.current.actions.resumeSession(storedId, true)
+  })
+  const repeated = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+  expect(repeated.findIndex(row => row.role === 'user')).toBe(0)
+  expect(repeated.filter(row => row.role === 'user')).toHaveLength(1)
+})
+
 it.each([
   ['cold', true, 'equal'],
   ['sparse', true, 'equal'],
