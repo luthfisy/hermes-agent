@@ -236,6 +236,19 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
     if remote_fields := frozenset(raw) & _REMOTE_MEMBER_FIELDS:
         raise DiscussionValidationError(
             f"member {index} contains cross-gateway fields: {', '.join(sorted(remote_fields))}")
+    # The desktop serialises a member's display name as ``label``; the rest of
+    # the discussion pipeline (actors, prompts, event log) speaks ``display_name``.
+    # Resolving the alias here keeps every downstream consumer on one field name.
+    # A non-empty ``display_name`` wins, so a client that already sends the
+    # canonical field keeps its own value instead of the desktop's label. A blank
+    # or non-string one counts as unset -- the desktop serialises an unset name
+    # that way, and treating it as unset lets the label fill the display name in.
+    if "label" in raw:
+        canonical = {k: v for k, v in raw.items() if k != "label"}
+        display_name = canonical.get("display_name")
+        if not isinstance(display_name, str) or not display_name.strip():
+            canonical["display_name"] = raw["label"]
+        raw = canonical
     member = _exact_fields(
         raw, label=f"member {index}", required=frozenset({"member_id", "profile", "handle"}),
         optional=frozenset({"display_name", "target"}))

@@ -253,8 +253,30 @@ def _validate_members(value: Any) -> tuple[list[dict[str, Any]], str]:
         raise HostedRoomError("too many room members")
     if not all(isinstance(member, dict) for member in value):
         raise HostedRoomError("each room member must be an object")
-    members = [dict(member) for member in value]
-    return members, _canonical_json(members, label="members", max_bytes=MAX_MEMBERS_JSON_BYTES)
+    # The store is a permissive boundary: it keeps whatever shape a client sent
+    # (replica ingestion and tests use minimal members) and lets the driver
+    # (gateway.hosted_room_discussion) be the single roster validator. Comparing
+    # stored members for idempotency is the one place that has to look through
+    # the desktop's ``label`` alias, because a retry would otherwise send the
+    # canonical field and mismatch the older row.
+    return list(value), _canonical_json(
+        list(value), label="members", max_bytes=MAX_MEMBERS_JSON_BYTES)
+
+
+def _resolve_member_alias(member: dict[str, Any]) -> dict[str, Any]:
+    """Return ``member`` with the desktop's ``label`` resolved to ``display_name``.
+
+    A non-empty ``display_name`` wins, matching how the driver resolves the same
+    alias; a blank one is an unset field. Unknown fields are kept, so this only
+    ever projects the alias and never drops routing metadata.
+    """
+    if "label" not in member:
+        return member
+    resolved = {key: value for key, value in member.items() if key != "label"}
+    display_name = resolved.get("display_name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        resolved["display_name"] = member["label"]
+    return resolved
 
 
 def _legacy_members_match(existing_json: str, proposed: list[dict[str, Any]]) -> bool:
@@ -268,9 +290,37 @@ def _legacy_members_match(existing_json: str, proposed: list[dict[str, Any]]) ->
     for previous, current in zip(existing, proposed, strict=True):
         if not isinstance(previous, dict):
             return False
-        previous, current = dict(previous), dict(current)
+        previous, current = dict(_resolve_member_alias(previous)), dict(_resolve_member_alias(current))
         previous_target, current_target = previous.pop("target", None), current.pop("target", None)
         if previous != current or (previous_target not in (None, {}) and previous_target != current_target):
+            return False
+    return True
+
+
+def _stored_members_equal(existing_json: str, proposed_json: str) -> bool:
+    """Compare members for idempotency across the driver's ``label`` alias.
+
+    A room written before a client started sending the canonical
+    ``display_name`` holds ``label`` instead; a retry of the same create would
+    then serialize differently and look like a conflicting state change. The
+    alias is resolved on both sides before comparing, and only for the
+    comparison -- the stored bytes are left untouched.
+    """
+    if existing_json == proposed_json:
+        return True
+    try:
+        existing = json.loads(existing_json)
+        proposed = json.loads(proposed_json)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(existing, list) or not isinstance(proposed, list):
+        return False
+    if len(existing) != len(proposed):
+        return False
+    for previous, current in zip(existing, proposed, strict=True):
+        if not isinstance(previous, dict) or not isinstance(current, dict):
+            return False
+        if _resolve_member_alias(previous) != _resolve_member_alias(current):
             return False
     return True
 
@@ -494,7 +544,11 @@ def _reload(conn: sqlite3.Connection, sql: str, params: tuple, missing: str) -> 
 def _room_from_row(row: sqlite3.Row, *, idempotent: bool = False) -> dict[str, Any]:
     keys = row.keys()  # sqlite3.Row: ``x in row`` scans values, so ``.keys()`` is load-bearing.
     return {
-        "room_id": row["room_id"], "name": row["name"], "members": json.loads(row["members_json"]),
+        "room_id": row["room_id"], "name": row["name"],
+        # The stored shape is returned verbatim without rewriting on read. Rows
+        # holding ``label`` (direct store callers, legacy data, or ingested replicas)
+        # keep their field; the driver normalises the alias on roster validation.
+        "members": json.loads(row["members_json"]),
         "authority_gateway_id": row["authority_gateway_id"], "authority_epoch": int(row["authority_epoch"]),
         "revision": int(row["revision"]), "created_at": float(row["created_at"]),
         "updated_at": float(row["updated_at"]), "idempotent": idempotent,
@@ -871,7 +925,7 @@ def create_room(
             if existing["disbanded_at"] is not None:
                 raise RoomConflictError("room_id belongs to a disbanded room")
             legacy_adoption = (existing["authority_gateway_id"] == "legacy" and authority_gateway_id != "legacy")
-            members_match = existing["members_json"] == members_json or (
+            members_match = _stored_members_equal(existing["members_json"], members_json) or (
                 legacy_adoption and _legacy_members_match(existing["members_json"], normalized_members))
             if existing["name"] != name or not members_match:
                 raise RoomConflictError("room_id already exists with different state")

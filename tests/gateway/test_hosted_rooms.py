@@ -9,6 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
+from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
 import hermes_state
@@ -1489,3 +1490,263 @@ def test_unreadable_legacy_store_is_reported_once_per_process(tmp_path, caplog):
     with sqlite3.connect(store) as conn:
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_room_legacy_imports'").fetchone()
+
+
+def _desktop_members():
+    """The member shape the Desktop client persists: the display name is ``label``."""
+    return [
+        {"handle": "bot-a", "label": "Bot A", "member_id": "bot-a", "profile": "alpha"},
+        {"handle": "bot-b", "label": "Bot B", "member_id": "bot-b", "profile": "beta"},
+    ]
+
+
+def test_driver_resolves_the_desktop_label_alias():
+    """The desktop serialises a display name as ``label``, so the driver's roster
+    validator -- the only strict one on the create path -- has to resolve it, or
+    a Desktop-created room can never be scheduled.
+    """
+    members = discussion.validate_roster(_desktop_members(), local_profiles={"alpha", "beta"})
+
+    assert [m.display_name for m in members] == ["Bot A", "Bot B"]
+
+
+def test_display_name_wins_when_both_are_present():
+    """``display_name`` is the field the driver documents, so a client sending
+    both must keep its own value rather than having the alias replace it.
+    """
+    members = discussion.validate_roster(
+        [{"member_id": "bot-a", "profile": "alpha", "handle": "bot-a",
+          "label": "Alias A", "display_name": "Canonical A"},
+         {"member_id": "bot-b", "profile": "beta", "handle": "bot-b",
+          "label": "Alias B", "display_name": "Canonical B"}],
+        local_profiles={"alpha", "beta"})
+
+    assert [m.display_name for m in members] == ["Canonical A", "Canonical B"]
+
+
+def test_blank_display_name_still_takes_the_alias():
+    """A client that sends the canonical key blank has not expressed a
+    preference, so the alias must still fill the display name in.
+    """
+    members = discussion.validate_roster(
+        [{"member_id": "bot-a", "profile": "alpha", "handle": "bot-a",
+          "label": "Bot A", "display_name": ""},
+         {"member_id": "bot-b", "profile": "beta", "handle": "bot-b",
+          "label": "Bot B", "display_name": ""}],
+        local_profiles={"alpha", "beta"})
+
+    assert [m.display_name for m in members] == ["Bot A", "Bot B"]
+
+
+def test_null_display_name_still_takes_the_alias():
+    """The desktop serialises an unset name as ``null``, so a non-string
+    ``display_name`` is treated as unset and the alias fills it in. The room has
+    to stay creatable -- rejecting it would keep the desktop's groups unusable.
+    """
+    members = discussion.validate_roster(
+        [{"member_id": "bot-a", "profile": "alpha", "handle": "bot-a",
+          "label": "Bot A", "display_name": None},
+         {"member_id": "bot-b", "profile": "beta", "handle": "bot-b",
+          "label": "Bot B", "display_name": ""}],
+        local_profiles={"alpha", "beta"})
+
+    assert [m.display_name for m in members] == ["Bot A", "Bot B"]
+
+
+def test_store_keeps_the_client_shape_and_the_driver_heals_it(tmp_path):
+    """The store is a permissive boundary, so it persists the desktop's ``label``
+    untouched and ``groups.state`` echoes the same shape back. The driver
+    normalises the alias, which is what makes an existing room drivable.
+    """
+    store = tmp_path / "shared-state.db"
+    room = rooms.create_room(
+        store, room_id="room-1", name="Release room",
+        members=_desktop_members(), authority_gateway_id="gateway-a", now=10)
+
+    assert all("label" in m for m in room["members"])
+
+    state = rooms.room_state(store, room_id="room-1")
+    assert [m["label"] for m in state["members"]] == ["Bot A", "Bot B"]
+    # The stored bytes are untouched: the alias is resolved by the driver, not
+    # rewritten by a migration.
+    with sqlite3.connect(store) as conn:
+        assert json.loads(conn.execute(
+            "SELECT members_json FROM hosted_rooms WHERE room_id='room-1'"
+        ).fetchone()[0]) == _desktop_members()
+
+    # The consumer whose strict roster validator used to reject ``label``.
+    discussion.validate_room(state, local_profiles={"alpha", "beta"})
+
+
+def test_create_room_is_idempotent_across_the_label_alias(tmp_path):
+    """Re-sending the same desktop payload must not trip the "already exists with
+    different state" check just because the alias was resolved on the first write.
+    """
+    store = tmp_path / "shared-state.db"
+    first = rooms.create_room(
+        store, room_id="room-1", name="Release room",
+        members=_desktop_members(), authority_gateway_id="gateway-a", now=10)
+    second = rooms.create_room(
+        store, room_id="room-1", name="Release room",
+        members=_desktop_members(), authority_gateway_id="gateway-a", now=11)
+
+    assert second["idempotent"] is True
+    assert second["members"] == first["members"]
+
+
+def test_create_room_is_idempotent_for_a_row_written_with_label(tmp_path):
+    """A room stored with ``label`` must stay idempotent for a retry that sends
+    the canonical ``display_name`` -- the driver resolves the alias, so the two
+    serialisations differ while the room is the same.
+    """
+    store = tmp_path / "shared-state.db"
+    rooms.create_room(
+        store, room_id="room-1", name="Release room",
+        members=_desktop_members(), authority_gateway_id="gateway-a", now=10)
+    retried = rooms.create_room(
+        store, room_id="room-1", name="Release room",
+        members=[{"member_id": "bot-a", "profile": "alpha", "handle": "bot-a",
+                  "display_name": "Bot A"},
+                 {"member_id": "bot-b", "profile": "beta", "handle": "bot-b",
+                  "display_name": "Bot B"}],
+        authority_gateway_id="gateway-a", now=11)
+
+    assert retried["idempotent"] is True
+    # The stored bytes are still the desktop's own shape.
+    with sqlite3.connect(store) as conn:
+        assert json.loads(conn.execute(
+            "SELECT members_json FROM hosted_rooms WHERE room_id='room-1'"
+        ).fetchone()[0]) == _desktop_members()
+
+
+def test_create_room_still_conflicts_on_a_real_member_change(tmp_path):
+    """The alias-aware comparison must not paper over an actual roster change."""
+    store = tmp_path / "shared-state.db"
+    rooms.create_room(
+        store, room_id="room-1", name="Release room",
+        members=_desktop_members(), authority_gateway_id="gateway-a", now=10)
+
+    with pytest.raises(rooms.RoomConflictError):
+        rooms.create_room(
+            store, room_id="room-1", name="Release room",
+            members=[{"member_id": "bot-a", "profile": "alpha", "handle": "bot-a",
+                      "display_name": "Renamed A"},
+                     {"member_id": "bot-b", "profile": "beta", "handle": "bot-b",
+                      "display_name": "Bot B"}],
+            authority_gateway_id="gateway-a", now=11)
+
+
+def test_replica_promotion_produces_a_drivable_room(tmp_path):
+    """A replica ingested from a desktop-created room carries the desktop's
+    ``label``; promoting it must still yield a room the driver accepts.
+    """
+    from gateway import hosted_room_replicas as replicas
+
+    store = tmp_path / "shared-state.db"
+    rooms.create_room(
+        store, room_id="room-1", name="Release room",
+        members=_desktop_members(), authority_gateway_id="gateway-a", now=10)
+    rooms.append_event(
+        store, room_id="room-1", event_id="evt-1", kind="message.user",
+        actor={"kind": "user", "id": "desktop-user", "display_name": "User"},
+        payload={"text": "hello"},
+        authority_gateway_id="gateway-a", authority_epoch=1, now=11)
+
+    rdb = tmp_path / "replica.db"
+    replicas.ingest_page(
+        rdb, room_id="room-1", room_name="Release room", members=_desktop_members(),
+        page=rooms.read_events(store, room_id="room-1", since_seq=0, limit=100))
+    assert replicas.replica_state(rdb, room_id="room-1")["members"] == _desktop_members()
+
+    # Promoting copies the replica members into the authoritative store, so the
+    # driver has to resolve the alias there too -- otherwise a promoted replica
+    # would be a room nobody can schedule.
+    promoted = replicas.promote_replica(rdb, room_id="room-1", now=12)
+    discussion.validate_room(
+        rooms.room_state(rdb, room_id="room-1"), local_profiles={"alpha", "beta"})
+    assert promoted["room_id"] == "room-1"
+    assert rooms.room_state(rdb, room_id="room-1")["members"] == _desktop_members()
+
+
+def test_minimal_members_still_pass_through(tmp_path):
+    """The store stays permissive: replica ingestion and other clients rely on
+    minimal member shapes, so resolving one alias must not tighten it.
+    """
+    store = tmp_path / "shared-state.db"
+    room = rooms.create_room(
+        store, room_id="room-1", name="Field Room",
+        members=[{"kind": "bot", "id": "planner"}, {"kind": "bot", "id": "coder"}],
+        authority_gateway_id="gateway-a", now=10)
+
+    assert [m["id"] for m in room["members"]] == ["planner", "coder"]
+    assert rooms.room_state(store, room_id="room-1")["members"] == room["members"]
+
+
+def test_legacy_adoption_accepts_a_label_shaped_proposal(tmp_path):
+    """A legacy room predates ``display_name``, so it holds ``label``. When the
+    desktop adopts it -- still sending its own field shape, now with routing
+    targets the legacy room could not store -- the adoption must match rather
+    than look like a conflicting state change.
+
+    Both sides have to be projected through the alias: comparing a raw proposal
+    against a resolved row would reject an identical roster.
+    """
+    store = tmp_path / "shared-state.db"
+    rooms.create_room(
+        store, room_id="room-1", name="Legacy room",
+        members=_desktop_members(), authority_gateway_id="legacy", now=10)
+
+    adopted = rooms.create_room(
+        store, room_id="room-1", name="Legacy room",
+        members=[
+            {**_desktop_members()[0], "target": {"kind": "local", "profile": "alpha"}},
+            {**_desktop_members()[1], "target": {"kind": "local", "profile": "beta"}},
+        ],
+        authority_gateway_id="gateway-a", now=11)
+
+    assert adopted["authority_gateway_id"] == "gateway-a"
+    assert [m["label"] for m in adopted["members"]] == ["Bot A", "Bot B"]
+
+
+def test_legacy_adoption_still_rejects_a_genuine_conflict(tmp_path):
+    """Projecting the alias must not make the adoption path permissive: a
+    roster that really differs has to stay rejected.
+    """
+    store = tmp_path / "shared-state.db"
+    rooms.create_room(
+        store, room_id="room-1", name="Legacy room",
+        members=_desktop_members(), authority_gateway_id="legacy", now=10)
+
+    with pytest.raises(rooms.RoomConflictError):
+        rooms.create_room(
+            store, room_id="room-1", name="Legacy room",
+            members=[
+                {"handle": "bot-a", "label": "Renamed A", "member_id": "bot-a", "profile": "alpha"},
+                {"handle": "bot-b", "label": "Bot B", "member_id": "bot-b", "profile": "beta"},
+            ],
+            authority_gateway_id="gateway-a", now=11)
+
+
+def test_a_non_string_label_is_rejected_as_an_invalid_display_name(tmp_path):
+    """The alias fills the driver's ``display_name`` in, so a ``label`` the
+    client could not have meant as a name has to be reported as one -- not
+    silently kept as an unknown field.
+    """
+    for bad_label in (123, {"name": "Bot A"}, ["Bot A"]):
+        with pytest.raises(discussion.DiscussionValidationError):
+            discussion.validate_roster(
+                [{"member_id": "bot-a", "profile": "alpha", "handle": "bot-a",
+                  "label": bad_label}],
+                local_profiles={"alpha"})
+
+
+def test_an_overlong_label_is_rejected(tmp_path):
+    """The alias fills the driver's ``display_name`` in, so it inherits the
+    driver's length limit instead of bypassing it.
+    """
+    overlong = "x" * (rooms.MAX_ACTOR_LABEL_CHARS + 1)
+    with pytest.raises(discussion.DiscussionValidationError):
+        discussion.validate_roster(
+            [{"member_id": "bot-a", "profile": "alpha", "handle": "bot-a",
+              "label": overlong}],
+            local_profiles={"alpha"})
