@@ -5,6 +5,7 @@ call time so imports stay one-way (both of those modules import this one lazily)
 """
 
 import contextlib
+import inspect
 import os
 import subprocess
 import sys
@@ -569,6 +570,22 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
                   for pid in survivors)
 
 
+def _stale_pids(dash, *, exclude_pids: "set[int] | None", scope_home: str | None) -> list[int]:
+    """``dash._find_stale_dashboard_pids`` tolerant of a pre-update ``main_dashboard`` (#117305).
+
+    The post-swap cleanup runs in the PRE-pull interpreter (or one that cached the old
+    module), so a fresh ``dashboard_procs`` can be handed an OLD ``main_dashboard`` whose
+    finder predates the ``scope_home`` kwarg (#113978). Passing it blindly is the reported
+    crash; dropping it silently would widen the stop sweep to every install's backends. So:
+    pass it when the callee accepts it, else apply the same home filter here.
+    """
+    params = inspect.signature(dash._find_stale_dashboard_pids).parameters
+    if "scope_home" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dash._find_stale_dashboard_pids(exclude_pids=exclude_pids, scope_home=scope_home)
+    pids = dash._find_stale_dashboard_pids(exclude_pids=exclude_pids)
+    return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
@@ -605,7 +622,7 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
+    pids = _stale_pids(_dash, exclude_pids=exclude or None, scope_home=scope_home)
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
