@@ -2634,6 +2634,12 @@ export interface Translations {
       addFolder: string
       primaryBadge: string
       removeFolder: string
+      removeFolderDesc: string
+      removeFolderFailed: string
+      menuRestore: string
+      workspaceArchived: string
+      workspaceShared: string
+      profileLabel: string
       create: string
       menu: string
       menuRename: string
