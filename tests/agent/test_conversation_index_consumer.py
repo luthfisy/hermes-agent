@@ -127,6 +127,25 @@ def test_unavailable_index_uses_bounded_retry_status(db, tmp_path):
     assert status.next_retry_at > before
 
 
+def test_unavailable_index_cannot_pin_feed_retention(db, tmp_path):
+    class UnavailableIndex(FakeIndex):
+        def is_available(self):
+            return False
+
+    consumer, _, store = _consumer(db, tmp_path, UnavailableIndex())
+    for index in range(5):
+        db.append_message("alpha", role="user", content=f"message-{index}")
+
+    assert consumer.run_once() == 0
+    assert store.load() == 0
+    assert db.prune_conversation_changes(max_rows=2) == 3
+
+    bounds = db.get_conversation_change_bounds()
+    assert bounds.floor_sequence == 4
+    assert bounds.high_water_sequence == 5
+    assert db._conn.execute("SELECT COUNT(*) FROM conversation_changes").fetchone()[0] == 2
+
+
 def test_partial_commit_advances_only_to_provider_committed_prefix(db, tmp_path):
     db.append_message("alpha", role="user", content="one")
     db.append_message("alpha", role="assistant", content="two")

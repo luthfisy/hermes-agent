@@ -209,13 +209,20 @@ This guarantees that a plugin outage cannot create an unobservable committed tra
 
 The feed is durable but not infinite history.
 
+Core maintenance retains the newest **50,000 sequence positions** by default. Retention
+is owned by Hermes itself, not by a plugin cursor: normal state-db housekeeping prunes the
+feed even when no index provider is configured. Long-lived canonical writers also perform
+an opportunistic sweep every 1,000 published changes, bounding the between-maintenance
+window to fewer than 51,000 sequence positions. Pruning deletes only old outbox rows;
+SQLite's AUTOINCREMENT high-water mark is preserved.
+
 Core exposes:
 
 - current high-water sequence;
 - oldest retained sequence; and
 - changes after a cursor.
 
-If a plugin cursor predates the retained floor, incremental replay fails explicitly with "rebuild required." Retention policy is bounded and independent of plugin availability; a dead plugin cannot grow core storage without limit.
+If a plugin cursor predates the retained floor, incremental replay fails explicitly with "rebuild required." Retention policy is bounded and independent of plugin availability; a dead or unavailable plugin cannot grow core storage without limit and rebuilds from canonical history after falling behind.
 
 ## Rebuild protocol
 

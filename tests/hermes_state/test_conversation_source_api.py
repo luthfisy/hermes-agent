@@ -40,6 +40,35 @@ def test_feed_gap_is_explicit_after_retention(db):
         db.get_conversation_changes(after_sequence=0)
 
 
+def test_feed_retention_bounds_rows_and_preserves_high_water(db):
+    for index in range(6):
+        db.append_message("alpha", role="user", content=f"message-{index}")
+
+    assert db.prune_conversation_changes(max_rows=3) == 3
+
+    bounds = db.get_conversation_change_bounds()
+    assert bounds.floor_sequence == 4
+    assert bounds.high_water_sequence == 6
+    assert db._conn.execute("SELECT COUNT(*) FROM conversation_changes").fetchone()[0] == 3
+
+    with pytest.raises(ConversationFeedGapError):
+        db.get_conversation_changes(after_sequence=2)
+    assert [change.sequence for change in db.get_conversation_changes(after_sequence=3)] == [4, 5, 6]
+
+
+def test_long_lived_writer_prunes_feed_without_index_provider(db, monkeypatch):
+    monkeypatch.setattr(db, "CONVERSATION_CHANGE_RETENTION_ROWS", 3)
+    monkeypatch.setattr(db, "_CONVERSATION_CHANGE_RETENTION_SWEEP_INTERVAL", 1)
+
+    for index in range(5):
+        db.append_message("alpha", role="user", content=f"message-{index}")
+
+    bounds = db.get_conversation_change_bounds()
+    assert bounds.floor_sequence == 3
+    assert bounds.high_water_sequence == 5
+    assert db._conn.execute("SELECT COUNT(*) FROM conversation_changes").fetchone()[0] == 3
+
+
 def test_profile_scoped_conversation_enumeration(tmp_path):
     first = SessionDB(db_path=tmp_path / "first.db")
     second = SessionDB(db_path=tmp_path / "second.db")

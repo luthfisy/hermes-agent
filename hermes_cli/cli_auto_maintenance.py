@@ -46,6 +46,10 @@ def _run_state_db_auto_maintenance(session_db) -> None:
 
         cfg = (_load_full_config().get("sessions") or {})
 
+        # Conversation-index feed retention is core housekeeping, independent of
+        # session auto-prune and of whether any derived index provider is healthy.
+        session_db.prune_conversation_changes()
+
         # Auto-archive is independent of auto_prune: run it before prune's early return.
         if cfg.get("auto_archive", False):
             session_db.maybe_auto_archive(
