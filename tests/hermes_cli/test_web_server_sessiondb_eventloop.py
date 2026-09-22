@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from fastapi import Request
 
 from hermes_cli import web_server
 import hermes_cli.web_models as _web_models
@@ -12,6 +13,12 @@ import hermes_cli.web_server_sessions as _web_server_sessions
 from hermes_cli import web_server_sessions
 from hermes_cli.web_routers import analytics as web_analytics
 from hermes_cli.web_routers import sessions as web_sessions
+
+# search_sessions/get_session_detail are admin-gated (_require_dashboard_admin) since the Mini App
+# tiered access control landed; a bare Request with no request.state.token_principal set resolves
+# to the cookie/session caller's unrestricted scope, same as these direct calls always got before
+# that gate existed.
+_FAKE_REQUEST = Request(scope={"type": "http", "headers": []})
 
 
 TARGET_HANDLERS = {
@@ -173,9 +180,9 @@ class _ReadDB:
 @pytest.mark.parametrize(
     "call",
     [
-        pytest.param(lambda: _rt_sessions.search_sessions(q="hello"), id="search"),
+        pytest.param(lambda: _rt_sessions.search_sessions(_FAKE_REQUEST, q="hello"), id="search"),
         pytest.param(lambda: _rt_sessions.get_session_stats(), id="stats"),
-        pytest.param(lambda: _rt_sessions.get_session_detail("sess-1"), id="detail"),
+        pytest.param(lambda: _rt_sessions.get_session_detail(_FAKE_REQUEST, "sess-1"), id="detail"),
     ],
 )
 def test_session_read_handlers_run_sessiondb_work_off_event_loop(monkeypatch, call):
