@@ -23,11 +23,13 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import { resolveElectronBinary } from './electron-binary'
-import { startMockServer, type MockServerOptions } from '../../../tests-js/scripts/mock-server'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -319,6 +321,38 @@ export function findElectron(): string {
 }
 
 /**
+ * Close an Electron app without letting a hung graceful quit stall the
+ * worker. `app.close()` has been observed to hang past 90s on Windows
+ * (quit path waits on the spawned backend); after a grace period we force
+ * kill the process so teardown always completes.
+ */
+async function teardownApp(app: ElectronApplication): Promise<void> {
+  await Promise.race([
+    app.close().catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, 15_000)),
+  ])
+
+  // If close() already succeeded, the app is disposed and process() can
+  // throw or return undefined — treat "gone" as success.
+  try {
+    const proc = app.process()
+
+    if (proc && proc.exitCode === null && !proc.killed) {
+      // Tree-kill: killing only the electron root orphans its spawned
+      // backend child, which keeps inherited stdio handles open and stalls
+      // the Playwright worker teardown past its 90s timeout.
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'])
+      } else {
+        proc.kill()
+      }
+    }
+  } catch {
+    // app already torn down; nothing to kill
+  }
+}
+
+/**
  * Launch the desktop app in dev mode.
  *
  * @param sandbox  - isolated HERMES_HOME + userData
@@ -376,6 +410,8 @@ export interface MockBackendOptions {
   extraConfig?: string
   /** Override the mock model's context window for compression scenarios. */
   modelContextLength?: number
+  /** Options forwarded verbatim to the mock inference server. */
+  mockServer?: import('../../../tests-js/scripts/mock-server').MockServerOptions
 }
 
 /**
@@ -385,10 +421,6 @@ export interface MockBackendOptions {
  *   3. Launch the desktop app
  *   4. Return handles for test interaction
  */
-export interface MockBackendOptions {
-  mockServer?: MockServerOptions
-}
-
 export async function setupMockBackend(options: MockBackendOptions = {}): Promise<MockBackendFixture> {
   // 1. Start mock server
   const mock = await startMockServer(options.mockServer)
@@ -415,7 +447,7 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
     mockUrl: mock.url,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await teardownApp(app)
       await mock.close()
       sandbox.cleanup()
     },
@@ -445,7 +477,7 @@ export async function setupNoProvider(): Promise<NoProviderFixture> {
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await teardownApp(app)
       sandbox.cleanup()
     },
   }
@@ -506,7 +538,7 @@ providers:
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await teardownApp(app)
       sandbox.cleanup()
     },
   }
@@ -592,7 +624,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await teardownApp(app)
       sandbox.cleanup()
     },
   }
@@ -643,6 +675,7 @@ export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFi
       // `position: fixed; inset: 0`. If the hit element or an ancestor
       // is a full-viewport fixed overlay, we're still covered.
       let node: Element | null = el
+
       while (node) {
         const cs = window.getComputedStyle(node)
 

@@ -296,14 +296,14 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
   if (supported === false) {
     return (
-      <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
+      <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
         {'needs setup (' + requires.join(', ') + ') \u2014 restart the gateway to enable in-app setup'}
       </span>
     )
   }
 
   if (phase === 'done') {
-    return <span className="ml-1.5 text-[0.65rem] text-(--ui-success)">set up ✓</span>
+    return <span className="ms-1.5 text-[0.65rem] text-(--ui-success)">set up ✓</span>
   }
 
   if (phase === 'keys') {
@@ -337,16 +337,16 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   }
 
   if (phase === 'oauth') {
-    return <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{message || 'Authorizing\u2026'}</span>
+    return <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{message || 'Authorizing\u2026'}</span>
   }
 
   if (phase === 'busy') {
-    return <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">Working…</span>
+    return <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">Working…</span>
   }
 
   if (phase === 'error') {
     return (
-      <span className="ml-1.5 text-[0.65rem] text-(--ui-danger,#f87171)">
+      <span className="ms-1.5 text-[0.65rem] text-(--ui-danger,#f87171)">
         {(message || 'Setup failed') + ' '}
         <Button className="underline" onClick={() => setPhase('idle')} size="inline" variant="link">
           retry
@@ -358,7 +358,7 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   // idle
   return (
     <Button
-      className="ml-1.5 text-[0.65rem] text-(--ui-accent) underline"
+      className="ms-1.5 text-[0.65rem] text-(--ui-accent) underline"
       onClick={() => void (isOAuth ? beginOAuth() : beginKeys())}
       size="inline"
       variant="link"

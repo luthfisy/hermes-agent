@@ -172,7 +172,7 @@ export function ModelVisibilityDialog({
 
         <div className="px-3 py-2">
           <Button
-            className="-ml-2 text-(--ui-text-tertiary)"
+            className="-ms-2 text-(--ui-text-tertiary)"
             onClick={() => {
               onOpenChange(false)
               onOpenProviders()

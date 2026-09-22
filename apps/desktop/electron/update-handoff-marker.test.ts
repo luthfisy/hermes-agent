@@ -4,11 +4,18 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { beforeAll, test, vi } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const POSIX_SCRIPT = path.join(REPO_ROOT, 'scripts', 'desktop-update', 'posix.sh')
 const WINDOWS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'desktop-update', 'windows.ps1')
+
+// These tests spawn real interpreter processes (pwsh/bash) repeatedly. Under
+// full-suite contention the 5s project default has proven too tight; 30s
+// only widens the ceiling — the tests stay fast in isolation.
+beforeAll(() => {
+  vi.setConfig({ testTimeout: 30_000 })
+})
 
 function sandbox(tag: string) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-handoff-marker-${tag}-`))
@@ -103,5 +110,9 @@ test.skipIf(process.platform === 'win32')('POSIX hand-off preserves the Desktop 
 })
 
 test.skipIf(process.platform !== 'win32')('PowerShell hand-off preserves the Desktop marker acquisition time', () => {
+  // A real PowerShell hand-off needs ~1.5s warm but up to 6.5s+ when the CI
+  // box runs 16 vitest workers at once — the default 5s per-test timeout
+  // misreports contention as failure. The PowerShell-specific assertion body
+  // is in assertScriptHandoff (sync, spawn-based); 60s only bounds the worst case.
   assertScriptHandoff(runWindows)
-})
+}, 60_000)

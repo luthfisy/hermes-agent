@@ -249,7 +249,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
               </div>
               {hasChildren && (
                 <div
-                  className={cn('ml-3.5 flex flex-col gap-0.5 pl-1.5', !expanded && 'hidden')}
+                  className={cn('ms-3.5 flex flex-col gap-0.5 ps-1.5', !expanded && 'hidden')}
                   hidden={!expanded}
                   id={childrenId}
                 >
@@ -279,7 +279,7 @@ export function OverlayNav({ footer, groups }: { footer?: ReactNode; groups: Ove
           and the height matches the strip so the trigger lines up with the X. */}
       <div
         className={cn(
-          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-12',
+          'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 ps-3 pe-12',
           BAR_HIDDEN
         )}
       >

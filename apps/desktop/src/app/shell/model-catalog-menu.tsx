@@ -555,7 +555,7 @@ export function ModelCatalogMenu({
                           </span>
                           {loadProgress ? (
                             <span
-                              className="ml-auto flex shrink-0 items-center gap-1.5"
+                              className="ms-auto flex shrink-0 items-center gap-1.5"
                               title={copyPicker.loadingIntoMemory}
                             >
                               <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
@@ -571,7 +571,7 @@ export function ModelCatalogMenu({
                           ) : null}
                           {isCurrent ? (
                             <Codicon
-                              className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
+                              className={cn('text-foreground', loadProgress ? 'ms-1' : 'ms-auto')}
                               name="check"
                               size="0.75rem"
                             />
@@ -639,7 +639,7 @@ export function ModelCatalogMenu({
                 <span className="min-w-0 flex-1 truncate">
                   MoA: <HighlightMatches foldSeparators query={search} text={preset} />
                 </span>
-                {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+                {isCurrentMoa ? <Codicon className="ms-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )
           })}
@@ -691,7 +691,7 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
       textValue=""
     >
       <span className="min-w-0 flex-1 truncate">{target}</span>
-      <span className="ml-auto flex shrink-0 items-center gap-1.5" title={copy.downloading}>
+      <span className="ms-auto flex shrink-0 items-center gap-1.5" title={copy.downloading}>
         <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
           <span
             className="block h-full rounded-full bg-primary transition-[width] duration-500"

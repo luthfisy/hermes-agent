@@ -207,6 +207,7 @@ function CronAdvancedFields({
   modelOptions: ModelOptionsResult | null;
   availableToolsets: ToolsetInfo[];
 }) {
+  const { t } = useI18n();
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
     next: CronJobEditorState[K],
@@ -228,7 +229,7 @@ function CronAdvancedFields({
       <div className="mt-3 grid gap-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-provider`}>Provider</Label>
+            <Label htmlFor={`${idPrefix}-provider`}>{t.cron.fieldProvider}</Label>
             <Select
               id={`${idPrefix}-provider`}
               value={form.provider}
@@ -236,7 +237,7 @@ function CronAdvancedFields({
                 onChange({ ...form, provider: v, model: "" });
               }}
             >
-              <SelectOption value="">Default</SelectOption>
+              <SelectOption value="">{t.cron.defaultOption}</SelectOption>
               {selectOptions(
                 form.provider,
                 providers.map((p) => ({ value: p.slug, label: p.name })),
@@ -244,13 +245,13 @@ function CronAdvancedFields({
             </Select>
           </div>
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-model`}>Model</Label>
+            <Label htmlFor={`${idPrefix}-model`}>{t.cron.fieldModel}</Label>
             <Select
               id={`${idPrefix}-model`}
               value={form.model}
               onValueChange={(v) => update("model", v)}
             >
-              <SelectOption value="">Default</SelectOption>
+              <SelectOption value="">{t.cron.defaultOption}</SelectOption>
               {selectOptions(
                 form.model,
                 models.map((model) => ({ value: model, label: model })),
@@ -280,18 +281,18 @@ function CronAdvancedFields({
             no_agent: run the script only and deliver stdout verbatim
           </label>
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-script`}>Script</Label>
+            <Label htmlFor={`${idPrefix}-script`}>{t.cron.fieldScript}</Label>
             <Input
               id={`${idPrefix}-script`}
               value={form.script}
               onChange={(e) => update("script", e.target.value)}
-              placeholder="relative/path/in/scripts"
+              placeholder={t.cron?.jobIdsPlaceholder ?? "relative/path/in/scripts"}
             />
           </div>
         </div>
 
         <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}-workdir`}>Workdir</Label>
+          <Label htmlFor={`${idPrefix}-workdir`}>{t.cron.fieldWorkdir}</Label>
           <Input
             id={`${idPrefix}-workdir`}
             value={form.workdir}
@@ -316,7 +317,7 @@ function CronAdvancedFields({
             <textarea
               id={`${idPrefix}-context-from`}
               className="flex min-h-[64px] w-full border border-border bg-background/40 px-3 py-2 text-xs font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-              placeholder="one job id per line"
+              placeholder={t.cron.jobIdsPlaceholder}
               value={form.context_from}
               onChange={(e) => update("context_from", e.target.value)}
             />
@@ -950,8 +951,8 @@ export default function CronPage() {
               ghost
               size="icon"
               onClick={() => setCreateModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -967,7 +968,7 @@ export default function CronPage() {
 
             <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-profile">Profile</Label>
+                <Label htmlFor="cron-profile">{t.cron.fieldProfile}</Label>
                 <Select
                   id="cron-profile"
                   value={createProfile}
@@ -1025,8 +1026,8 @@ export default function CronPage() {
               ghost
               size="icon"
               onClick={() => setEditJob(null)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1055,7 +1056,7 @@ export default function CronPage() {
               />
 
               <div className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground font-mono-ui truncate pr-4">
+                <span className="text-xs text-muted-foreground font-mono-ui truncate pe-4">
                   {editJob.id}
                 </span>
                 <Button
@@ -1085,13 +1086,13 @@ export default function CronPage() {
           </H2>
 
           <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
+            <Label htmlFor="cron-profile-filter">{t.cron.fieldProfile}</Label>
             <Select
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
             >
-              <SelectOption value="all">All profiles</SelectOption>
+              <SelectOption value="all">{t.cron.allProfiles}</SelectOption>
               {profiles.map((profile) => (
                 <SelectOption key={profile.name} value={profile.name}>
                   {profileLabel(profile.name)}
@@ -1255,8 +1256,8 @@ export default function CronPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Edit job"
-                    aria-label="Edit job"
+        title={t.cron.editJob}
+        aria-label={t.cron.editJob}
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />

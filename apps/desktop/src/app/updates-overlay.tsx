@@ -284,7 +284,7 @@ function IdleView({
   const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <BrandMark className="size-16" />
 
@@ -342,7 +342,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
   // message + a Done button, not a copy-a-command box.
   if (!command) {
     return (
-      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
         <div className="flex flex-col items-center gap-3 text-center">
           <Terminal className="size-8 text-primary" />
 
@@ -358,7 +358,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
   }
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <Terminal className="size-8 text-primary" />
 
@@ -407,7 +407,7 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
   const u = t.updates
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <AlertCircle className="size-8 text-amber-500" />
 
@@ -519,7 +519,7 @@ export function BlockerView({
     : u.blockerBody
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="grid gap-5 px-6 pb-6 pt-7 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <div className="grid size-12 place-items-center rounded-full bg-warning/15 text-warning">
           <AlertCircle aria-hidden className="size-6" />
@@ -578,7 +578,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
 
   return (
     <ErrorState
-      className="px-6 pb-6 pt-7 pr-8"
+      className="px-6 pb-6 pt-7 pe-8"
       description={
         <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
           {message || u.errorBody}
@@ -612,7 +612,7 @@ function CenteredStatus({
   title: string
 }) {
   return (
-    <div className="grid gap-4 px-6 pb-6 pt-8 pr-8">
+    <div className="grid gap-4 px-6 pb-6 pt-8 pe-8">
       <div className="flex flex-col items-center gap-3 text-center">
         {icon}
 
