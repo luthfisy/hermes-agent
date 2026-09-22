@@ -713,6 +713,7 @@ _SKILL_COUNT_TTL_SECONDS = 600.0
 _SKILL_COUNT_RECHECK_SECONDS = 60.0
 _SKILL_COUNT_NEXT_CHECK: dict[str, float] = {}
 _SKILL_COUNT_LOCK = threading.Lock()
+_SKILL_COUNT_SCAN_LOCK = threading.Lock()
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:
@@ -753,13 +754,21 @@ def _count_skills(profile_dir: Path) -> int:
         return 0
     key = str(skills_dir)
     signature = _skills_dir_signature(skills_dir)
-    now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+    if cached is not None and cached[0] == signature and (time.time() - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
         return cached[2]
-    count = _walk_skill_count(skills_dir)
-    _SKILL_COUNT_CACHE[key] = (signature, now, count)
-    return count
+    # Background refreshes and detail callers share this cache. Keep scan
+    # ownership separate from the lock used by nonblocking list requests.
+    with _SKILL_COUNT_SCAN_LOCK:
+        signature = _skills_dir_signature(skills_dir)
+        now = time.time()
+        cached = _SKILL_COUNT_CACHE.get(key)
+        if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+            return cached[2]
+        count = _walk_skill_count(skills_dir)
+        # A slow scan must not publish an already-expired cache entry.
+        _SKILL_COUNT_CACHE[key] = (signature, time.time(), count)
+        return count
 
 
 def _cached_skill_count(profile_dir: Path) -> int:
