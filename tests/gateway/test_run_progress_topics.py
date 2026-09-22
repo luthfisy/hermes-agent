@@ -1261,6 +1261,7 @@ async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
     assert adapter.native_stops == 1
 
 
+
 class UnsupportedDestinationTaskCardAdapter(NativeTaskCardAdapter):
     """Relay connector shape for a flat Slack DM: cards need a thread anchor, so the
     connector rejects every card frame with a deterministic unsupported-destination error."""
@@ -2220,6 +2221,32 @@ async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_
     # Exactly TWO terminal headers: one for the first run of three calls,
     # one for the terminal call after web_search broke the streak.
     assert final.count("terminal\n```") == 2
+
+@pytest.mark.asyncio
+async def test_per_platform_streaming_does_not_override_global_disabled(monkeypatch, tmp_path):
+    """Regression for #53697: display.platforms.telegram.streaming=True must not
+    re-enable gateway streaming when streaming.enabled=False (global master switch)."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-per-platform-streaming-global-off",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {"streaming": True},
+                },
+                "interim_assistant_messages": True,
+            },
+            "streaming": {"enabled": False},
+        },
+        platform=Platform.TELEGRAM,
+    )
+
+    assert result.get("already_sent") is not True
+    assert adapter.edits == []
+
+
 
 
 class TestSlackReplyInThreadProgressRouting:
