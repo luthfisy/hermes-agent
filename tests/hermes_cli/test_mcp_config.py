@@ -245,6 +245,62 @@ class TestMcpAdd:
         }
 
 
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_removed_preset_does_not_write_config(self, tmp_path, capsys, existing):
+        """A removed preset is rejected without creating or changing config."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        config_path = tmp_path / "config.yaml"
+        if existing:
+            _seed_config(tmp_path, {"other": {"command": "other-server"}})
+        before = config_path.read_bytes() if existing else None
+        servers_before = read_raw_config().get("mcp_servers", {})
+
+        cmd_mcp_add(_make_args(name="codex", preset="codex"))
+
+        assert "Unknown MCP preset: codex" in capsys.readouterr().out
+        assert read_raw_config().get("mcp_servers", {}) == servers_before
+        if existing:
+            assert config_path.read_bytes() == before
+        else:
+            assert not config_path.exists()
+
+    @pytest.mark.parametrize("preset", ["codex", "never-existed-preset"])
+    @pytest.mark.parametrize(
+        "transport, expected",
+        [
+            pytest.param(
+                {"mcp_command": "some-cmd", "args": ["serve", "--verbose"]},
+                {"command": "some-cmd", "args": ["serve", "--verbose"]},
+                id="command",
+            ),
+            pytest.param(
+                {"url": "https://example.com/mcp"},
+                {"url": "https://example.com/mcp"},
+                id="url",
+            ),
+        ],
+    )
+    def test_explicit_transport_overrides_unknown_preset(
+        self, capsys, monkeypatch, preset, transport, expected
+    ):
+        """Stale preset names cannot veto or alter an explicit transport."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda *a, **kw: [])
+        # Decline HTTP auth; accept saving a server that reports no tools.
+        monkeypatch.setattr("builtins.input", lambda prompt: "n" if "auth" in prompt.lower() else "")
+
+        cmd_mcp_add(_make_args(name="explicit", preset=preset, **transport))
+
+        captured = capsys.readouterr()
+        assert "✗" not in captured.out
+        assert captured.err == ""
+        assert "Saved" in captured.out
+        assert read_raw_config()["mcp_servers"]["explicit"] == expected
+
     def test_add_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
         """A preset fills in command/args when no explicit transport given."""
         monkeypatch.setattr(

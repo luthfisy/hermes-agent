@@ -179,9 +179,7 @@ def _redact_probe_exception(exc: BaseException) -> Exception:
     return RuntimeError(safe)
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
-    "codex": {"command": "codex", "args": ["mcp-server"]},
-}
+_MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
 
 
 def _info(text: str): print(color(f"  {text}", Colors.DIM))
@@ -368,14 +366,12 @@ def _apply_mcp_preset(
     command: Optional[str],
     cmd_args: List[str],
     server_config: Dict[str, Any]) -> tuple[Optional[str], Optional[str], List[str], bool]:
-    """Apply a known MCP preset when transport details were omitted."""
-    if not preset_name:
+    """Explicit transport wins; the preset is a default supplier only."""
+    if url or command or not preset_name:
         return url, command, cmd_args, False
     preset = _MCP_PRESETS.get(preset_name)
     if not preset:
         raise ValueError(f"Unknown MCP preset: {preset_name}")
-    if url or command:
-        return url, command, cmd_args, False
     url, command = preset.get("url"), preset.get("command")
     cmd_args = list(preset.get("args") or [])
     if url:
