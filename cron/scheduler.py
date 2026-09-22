@@ -1694,6 +1694,32 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
     return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
 
+def _resolve_cron_model_alias(model: str, provider: str | None) -> tuple[str, str | None, str, str]:
+    """Expand a configured direct alias before cron builds a runtime or fallback chain."""
+    from hermes_cli.model_switch import resolve_startup_model_route
+
+    route = resolve_startup_model_route(model, explicit_provider=str(provider or ""))
+    if route is None:
+        return model, provider, "", ""
+    return route.model, route.provider or provider, route.base_url, route.api_key
+
+
+def _resolve_cron_fallback_chain(cfg: dict) -> list[dict]:
+    """Return the fallback chain with direct aliases expanded for ``AIAgent``."""
+    resolved: list[dict] = []
+    for entry in get_fallback_chain(cfg):
+        model, provider, base_url, api_key = _resolve_cron_model_alias(
+            str(entry.get("model") or ""), str(entry.get("provider") or "")
+        )
+        normalized = dict(entry, model=model, provider=provider)
+        if base_url and not normalized.get("base_url"):
+            normalized["base_url"] = base_url
+        if api_key and not normalized.get("api_key"):
+            normalized["api_key"] = api_key
+        resolved.append(normalized)
+    return resolved
+
+
 def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
     """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
@@ -1705,6 +1731,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
+    model, requested, alias_base_url, alias_api_key = _resolve_cron_model_alias(model, requested)
     try:
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
         # and resurrect stale providers for unpinned jobs.
@@ -1713,8 +1740,10 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             # api_mode must derive from the model actually run, not the stale persisted default.
             "target_model": model,
         }
-        if job.get("base_url"):
-            runtime_kwargs["explicit_base_url"] = job.get("base_url")
+        if job.get("base_url") or alias_base_url:
+            runtime_kwargs["explicit_base_url"] = job.get("base_url") or alias_base_url
+        if alias_api_key:
+            runtime_kwargs["explicit_api_key"] = alias_api_key
         return resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
@@ -1737,10 +1766,13 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             try:
                 from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
 
+                fb_model, fb_provider, alias_base_url, alias_api_key = _resolve_cron_model_alias(
+                    fb_model, fb_provider
+                )
                 fb_kwargs = {"requested": fb_provider, "target_model": fb_model}
-                if entry.get("base_url"):
-                    fb_kwargs["explicit_base_url"] = entry["base_url"]
-                fb_api_key = resolve_entry_api_key(entry)
+                if entry.get("base_url") or alias_base_url:
+                    fb_kwargs["explicit_base_url"] = entry.get("base_url") or alias_base_url
+                fb_api_key = resolve_entry_api_key(entry) or alias_api_key
                 if fb_api_key:
                     fb_kwargs["explicit_api_key"] = fb_api_key
                 runtime = resolve_runtime_provider(**fb_kwargs)
@@ -2362,7 +2394,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
-    setup.fallback_model = get_fallback_chain(_cfg) or None
+    setup.fallback_model = _resolve_cron_fallback_chain(_cfg) or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)
