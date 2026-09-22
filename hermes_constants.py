@@ -165,6 +165,29 @@ def get_process_hermes_home() -> Path:
     return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
 
 
+# Host-pinned identity of the profile this process serves as its own (None: follow HERMES_HOME).
+_PINNED_PROCESS_HERMES_HOME: str | None = None
+
+
+def pin_process_hermes_home(path: "str | Path | None") -> None:
+    """Pin the home this process serves as its own profile for routed-profile decisions.
+
+    An embedding host that serves several profiles and mirrors the active turn's profile into
+    ``os.environ["HERMES_HOME"]`` for legacy readers (Hermes WebUI) otherwise makes every turn's own
+    profile look like the process profile: ``agent.secret_scope.serves_routed_profile()`` turns
+    False, and that turn's MCP connections fall back to bare, cross-profile names. ``None`` clears
+    the pin. Hosts that never mutate ``HERMES_HOME`` need not call this.
+    """
+    global _PINNED_PROCESS_HERMES_HOME
+    _PINNED_PROCESS_HERMES_HOME = None if path is None else str(path)
+
+
+def get_routing_process_hermes_home() -> Path:
+    """Process home for routed-profile decisions: the pinned home, else :func:`get_process_hermes_home`."""
+    pinned = _PINNED_PROCESS_HERMES_HOME
+    return _expand_hermes_home(pinned) if pinned else get_process_hermes_home()
+
+
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
 # managed Node): re-downloadable on demand and routinely tens to hundreds of GB. Shared by
 # ``hermes backup`` (excludes them) and ``profile create --clone-all`` (skips them from the
