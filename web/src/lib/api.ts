@@ -2696,6 +2696,9 @@ export interface PluginManifestResponse {
   slots?: string[];
   entry: string;
   css?: string | null;
+  integrity?: string;
+  css_integrity?: string;
+  sdk?: { min: string; max: string };
   has_api: boolean;
   source: string;
 }
