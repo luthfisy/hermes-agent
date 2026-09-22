@@ -2649,7 +2649,7 @@ async function waitForUpdateToFinish() {
 }
 
 function unpackedPathFor(filePath) {
-  return filePath.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
+  return filePath.replace(/(?<=^|[\\/])app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
 }
 
 function findOnPath(command) {
