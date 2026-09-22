@@ -1813,26 +1813,32 @@ def _profile_runtime_scope(
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import set_secret_scope, reset_secret_scope
 
-    home_token = set_hermes_home_override(str(profile_home))
-    if prepared_secret_scope is not None:
-        secrets = prepared_secret_scope
-    elif hydrate_secrets:
-        secrets = _load_profile_secret_scope(Path(profile_home))
-    else:
-        from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
-        secrets = build_profile_secret_scope(Path(profile_home))
-    secret_token = set_secret_scope(secrets)
-    # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-    # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-    # pinned (first-writer-wins backend leak; #68559).
+    # Every token is unwound in ONE finally, including when a LATER setup step raises. Secret
+    # hydration and the terminal-policy install both touch the filesystem and can fail, and the
+    # home token is already installed by then — leaving it set stranded the calling thread with the
+    # failed profile as its get_hermes_home() (#110405 review).
     from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
-    with install_and_reset_profile_terminal_scope(Path(profile_home)):
-        try:
+    home_token = set_hermes_home_override(str(profile_home))
+    secret_token = None
+    try:
+        if prepared_secret_scope is not None:
+            secrets = prepared_secret_scope
+        elif hydrate_secrets:
+            secrets = _load_profile_secret_scope(Path(profile_home))
+        else:
+            from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
+            secrets = build_profile_secret_scope(Path(profile_home))
+        secret_token = set_secret_scope(secrets)
+        # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
+        # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may
+        # have pinned (first-writer-wins backend leak; #68559).
+        with install_and_reset_profile_terminal_scope(Path(profile_home)):
             yield
-        finally:
+    finally:
+        if secret_token is not None:
             reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+        reset_hermes_home_override(home_token)
 
 
 @_asynccontextmanager
@@ -4704,26 +4710,35 @@ def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = Non
     or vacuumed by anyone — the dashboard/serve trigger defers to the gateway for every profile a
     gateway owns (``web_server_sessions``). *launch* carries the launch home's configured transcript
     dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
-    from hermes_cli.config import load_config as _load_full_config
-    from hermes_state_registry import acquire, release_or_close
-    _sess_cfg = (_load_full_config().get("sessions") or {})
-    if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
-        return
-    _adb = acquire()
+    # Isolated per profile. ``_for_each_served_profile`` runs this once per served profile with no
+    # boundary between them, and ``_housekeeping_chore`` only catches at the tick level — so an
+    # unreadable store would abandon every profile AFTER it in the same tick. That is not a corner
+    # case: ``GatewayRunner._init_session_db()`` deliberately tolerates a failed primary-store init
+    # and keeps running, so a broken launch store beside healthy satellites is reachable, and the
+    # dashboard has already stood down for those satellites (#110405 review).
     try:
-        if _sess_cfg.get("auto_archive", False):
-            _adb.maybe_auto_archive(
-                idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
-                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
-        if _sess_cfg.get("auto_prune", False):
-            _adb.maybe_auto_prune_and_vacuum(
-                retention_days=int(_sess_cfg.get("retention_days", 90)),
-                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
-                min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
-                vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
-                sessions_dir=_profile_sessions_dir(launch))
-    finally:
-        release_or_close(_adb)
+        from hermes_cli.config import load_config as _load_full_config
+        from hermes_state_registry import acquire, release_or_close
+        _sess_cfg = (_load_full_config().get("sessions") or {})
+        if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
+            return
+        _adb = acquire()
+        try:
+            if _sess_cfg.get("auto_archive", False):
+                _adb.maybe_auto_archive(
+                    idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
+                    min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
+            if _sess_cfg.get("auto_prune", False):
+                _adb.maybe_auto_prune_and_vacuum(
+                    retention_days=int(_sess_cfg.get("retention_days", 90)),
+                    min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
+                    min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
+                    vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+                    sessions_dir=_profile_sessions_dir(launch))
+        finally:
+            release_or_close(_adb)
+    except Exception as exc:
+        logger.debug("state.db maintenance skipped for the scoped profile: %s", exc)
 
 
 def _housekeeping_deferred_fts_retry() -> None:

@@ -215,10 +215,125 @@ _AUTO_ARCHIVE_CHECK_INTERVAL_S = 300.0
 _last_auto_archive_check: Dict[str, float] = {}
 
 
+def _strict_gateway_health_probe():
+    """``(alive, body)`` for the configured cross-container gateway, raising on "couldn't tell".
+
+    ``_probe_gateway_health`` collapses every failure — DNS, timeout, refused, non-200 — into
+    ``(False, None)``, which ``resolve_gateway_liveness`` cannot distinguish from a gateway that
+    is genuinely down. For a *status page* that is fine; for this gate it is not, because
+    "unreachable" would license a second writer on a store a live remote gateway owns. So a
+    configured endpoint that does not positively confirm liveness raises, which
+    ``resolve_gateway_liveness`` records as ``probe_error`` and this gate treats as owned.
+
+    The cost is deliberate: with ``GATEWAY_HEALTH_URL`` set and the remote gateway actually down,
+    the dashboard stops sweeping rather than risk the tear. A skipped sweep costs one archive
+    interval (#110405 review).
+    """
+    from hermes_cli.web_server_gateway import _probe_gateway_health
+
+    alive, body = _probe_gateway_health()
+    if alive:
+        return True, body
+    raise RuntimeError("configured gateway health endpoint did not confirm liveness")
+
+
+def _gateway_owns_home(home: Path) -> bool:
+    """True when a gateway owns the store at ``home`` *or* ownership can't be determined.
+
+    ``_check_gateway_running`` returns only ``GatewayLiveness.running`` and drops
+    ``probe_error``, which is the field that exists to tell "down" from "unknown"
+    (``gateway/status.py``). A caller that reads only ``.running`` treats an unreadable PID file
+    or an unflockable lock as "no gateway" and opens a second writer — the exact tear this gate
+    exists to prevent. So resolve the liveness here and count unknown as owned.
+
+    Two rungs need more than the default wiring, both found in review on #110405:
+
+    * ``get_running_pid()`` normalises malformed/unreadable identity metadata to ``None``, so an
+      ACTIVE runtime lock whose PID or lock record is corrupt reported ``running=False,
+      probe_error=False``. ``get_running_pid_identity_strict()`` raises on ambiguous state
+      instead, and (like the non-strict call with ``cleanup_stale=False``) never unlinks another
+      profile's PID file.
+    * The cross-container health rung is only consulted when a probe is passed. In a split
+      gateway/dashboard deployment ``GATEWAY_HEALTH_URL`` can be the ONLY evidence the gateway is
+      live, since local PID and runtime files are absent entirely.
+    """
+    from gateway.status import get_running_pid_identity_strict, resolve_gateway_liveness
+    from hermes_cli.web_server import _GATEWAY_HEALTH_URL
+
+    def _pid_probe(path):
+        identity = get_running_pid_identity_strict(Path(path))
+        return identity[0] if identity else None
+
+    liveness = resolve_gateway_liveness(
+        profile_dir=home, use_cache=False, pid_probe=_pid_probe,
+        health_probe=_strict_gateway_health_probe if _GATEWAY_HEALTH_URL else None)
+    return bool(liveness.running or liveness.probe_error)
+
+
+def _satellite_owned_by_multiplexer(name: str) -> bool:
+    """True when the default multiplexer owns satellite ``name``'s store, OR we can't tell.
+
+    ``_served_by_running_multiplexer`` / ``named_profile_served_by_running_multiplexer``
+    convert every probe failure into ``False``, so an unreadable or malformed
+    ``gateway.pid`` / ``gateway_state.json`` under a live default gateway reads as
+    "nobody serves this profile" and the dashboard opens a second writer into a store the
+    multiplexer is holding (#110405 review). This is the tri-state version: it only returns
+    False when the default multiplexer is *positively* known not to own the store.
+
+    Raises rather than swallowing — the caller treats an exception as owned.
+    """
+    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    from hermes_cli.profiles import normalize_profile_name
+    from hermes_constants import get_default_hermes_root
+
+    default_root = Path(get_default_hermes_root())
+    if not _gateway_owns_home(default_root):
+        return False  # the default multiplexer is definitively down: nothing holds that writer
+    # It is up, or its liveness is unknown. An authoritative served list settles it; None means
+    # "no record" (stopped, pre-multiplex writer, or an unreadable/malformed record), which under a
+    # live-or-unknown multiplexer is exactly the ambiguity that must fail closed.
+    recorded = recorded_served_profiles(default_root)
+    if recorded is None:
+        return True
+    return normalize_profile_name(name) in {normalize_profile_name(p) for p in recorded}
+
+
+def _auto_archive_owned_by_gateway(profile: Optional[str]) -> bool:
+    """True when a live gateway already owns ``profile``'s session store.
+
+    The gateway runs its own ``maybe_auto_archive`` timer, so standing down skips
+    nothing — but opening a *writable* ``SessionDB`` here and closing it tears down the
+    WAL generation the gateway is holding (SQLite checkpoints on close and unlinks
+    ``-wal``/``-shm`` as the apparent last connection), stranding it on deleted inodes
+    behind ``DeletedWalGenerationError`` (#109727, #107688, #100896).
+
+    Fails closed in every direction: an unknown liveness answer, an unresolvable
+    profile, or a raising multiplexer probe all count as owned. A skipped sweep costs
+    one archive interval; a wrong "not owned" costs the gateway its WAL.
+    """
+    try:
+        if not profile:
+            from hermes_constants import get_hermes_home
+
+            return _gateway_owns_home(get_hermes_home())
+
+        from hermes_cli.web_server_cron import _cron_profile_home
+
+        name, home = _cron_profile_home(profile)
+        if _gateway_owns_home(Path(home)):
+            return True
+        # A served satellite writes no gateway.pid of its own; the live default
+        # multiplexer holds its writer and (since this change) sweeps it too.
+        return bool(name != "default" and _satellite_owned_by_multiplexer(name))
+    except Exception:
+        return True
+
+
 def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
     """Config-gated stale-session auto-archive for ``profile``; never raises.
     ``hermes serve`` runs neither CLI nor gateway startup hooks, so this
-    session-list trigger is what makes ``sessions.auto_archive`` work there."""
+    session-list trigger is what makes ``sessions.auto_archive`` work there —
+    but only when no gateway owns the store (see ``_auto_archive_owned_by_gateway``)."""
     try:
         key = profile or ""
         now = time.monotonic()
@@ -242,17 +357,20 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
             reset_hermes_home_override(_home_token)
         if not cfg.get("auto_archive", False):
             return
-        from hermes_cli.profiles import _check_gateway_running
-
         # A live gateway owns this profile's store and runs the same sweep on its own
         # housekeeping tick ("state.db maintenance tick" in gateway/run.py, profile-scoped so a
-        # multiplexed secondary's store is swept too). Opening it WRITABLE from `hermes
-        # serve` adds a second writer to a database another process is already archiving,
-        # for zero extra coverage (#110405). `_check_gateway_running` is the canonical
-        # per-profile predicate (`_maybe_run_skill_maintenance` below uses it): its
-        # multiplexer rung catches a served secondary, which owns no gateway.pid or lock
-        # of its own and a bare lock-file probe would report stopped.
-        if _check_gateway_running(profile_home):
+        # multiplexed secondary's store is swept too). Opening it WRITABLE from `hermes serve`
+        # adds a second writer to a database another process is already archiving, for zero
+        # extra coverage (#110405).
+        #
+        # Deliberately NOT `_check_gateway_running`: that exposes only `GatewayLiveness.running`
+        # and drops `probe_error`, and `_served_by_running_multiplexer` turns probe failures into
+        # False. So an unreadable gateway.pid or a malformed gateway_state.json under a LIVE
+        # gateway reads as "no owner" and the second writer is opened anyway — both reproduced in
+        # review on #110405. This gate resolves the liveness itself, keeps the unknown state, and
+        # treats unknown as owned.
+        if _auto_archive_owned_by_gateway(profile):
+            _log.debug("auto-archive stood down: gateway owns profile %r", profile or "default")
             return
         db = _open_session_db_for_profile(profile, read_only=False)
         try:
