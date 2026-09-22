@@ -129,7 +129,7 @@ mcp_servers:
 
 ## 内置预设
 
-目前没有可用的内置 MCP 预设。请使用 `--command` / `--args` 显式配置 stdio MCP 服务器，或使用 `--url` 配置 HTTP MCP 服务器。`--preset` 标志仍被接受，但未知预设名称会被拒绝，且不会保存配置。
+目前没有可用的内置 MCP 预设。请使用 `--command` / `--args` 显式配置 stdio MCP 服务器，或使用 `--url` 配置 HTTP MCP 服务器。`--preset` 标志仍被接受，但未显式提供 `--command` / `--url` 时，未知预设名称会被拒绝，且不会保存配置。
 
 Codex CLI 从 0.154.0 版本起移除了 `codex mcp-server` 入口，因此原有的 `codex` 预设已不可用。`codex app-server` 使用独立的 JSON-RPC 协议，不能直接替代 MCP 服务器。
 

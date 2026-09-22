@@ -536,7 +536,7 @@ mcp_servers:
 
 ## Built-in presets
 
-No built-in MCP presets are currently available. Configure an MCP server explicitly with `--command` / `--args` for stdio, or `--url` for HTTP. The `--preset` flag remains accepted, but unknown preset names are rejected without saving configuration.
+No built-in MCP presets are currently available. Configure an MCP server explicitly with `--command` / `--args` for stdio, or `--url` for HTTP. The `--preset` flag remains accepted, but without an explicit `--command` / `--url` an unknown preset name is rejected without saving configuration.
 
 Codex CLI removed its `codex mcp-server` entry point in version 0.154.0, so the former `codex` preset is no longer available. `codex app-server` uses its own JSON-RPC protocol and is not a drop-in MCP replacement.
 
