@@ -154,3 +154,37 @@ def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys
 
     assert exc.value.code == 1
     assert "no dashboard UI" in capsys.readouterr().out
+
+
+def test_inherited_desktop_flag_without_session_token_still_refuses_headless_owner(
+    host_dir, owner, monkeypatch, capsys
+):
+    """An inherited HERMES_DESKTOP=1 is not proof of desktop ownership (#119210).
+
+    A shell spawned by the Desktop app inherits the flag without the per-spawn
+    HERMES_DASHBOARD_SESSION_TOKEN, so the attach ladder must still run: a
+    dashboard facing a headless owner refuses instead of binding a second backend.
+    """
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    owner.serves_spa["value"] = False
+    _publish(hr.process_create_time(), port=owner.port)
+
+    with pytest.raises(SystemExit) as exc:
+        _attach_to_host_backend(_args(), headless_backend=False)
+
+    assert exc.value.code == 1
+    assert "no dashboard UI" in capsys.readouterr().out
+
+
+def test_desktop_owned_child_with_session_token_keeps_own_lifecycle(
+    host_dir, owner, monkeypatch
+):
+    """A real desktop-owned spawn carries the per-spawn session token, so it keeps
+    its own lifecycle and skips the attach ladder."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "test-token")
+    owner.serves_spa["value"] = False
+    _publish(hr.process_create_time(), port=owner.port)
+
+    assert _attach_to_host_backend(_args(), headless_backend=False) is None

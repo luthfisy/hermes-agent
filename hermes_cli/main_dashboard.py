@@ -812,7 +812,8 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     Exactly ONE backend runs per host and multiplexes every profile, so a second invocation —
     for ANY profile, the default included — reports the live one and exits 0 instead of binding
     a second port. ``--isolated`` opts out (Desktop's SSH backend proves ownership with it) and
-    Desktop pool backends (HERMES_DESKTOP=1) keep their own lifecycle.
+    Desktop-owned spawns (HERMES_DESKTOP=1 plus the per-spawn session token) keep
+    their own lifecycle.
 
     Exit 0 means "the host backend answered and serves what you asked for", and nothing else:
 
@@ -826,7 +827,14 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
 
     Returns normally — leaving the caller to BIND — when no owner answers.
     """
-    if getattr(args, "isolated", False) or os.environ.get("HERMES_DESKTOP") == "1":
+    # HERMES_DESKTOP=1 alone is not proof of desktop ownership: every shell the
+    # Desktop app spawns inherits it. Only a per-spawn HERMES_DASHBOARD_SESSION_TOKEN
+    # marks a real desktop-owned child (#119210, same class as #116107).
+    desktop_owned_child = (
+        os.environ.get("HERMES_DESKTOP") == "1"
+        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"))
+    )
+    if getattr(args, "isolated", False) or desktop_owned_child:
         return
     record = _host_backend_attachment()
     if record is None:
