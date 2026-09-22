@@ -828,11 +828,12 @@ class SessionMessagesMixin:
                 "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
                 (self._encode_content(content), row_id, session_id),
             )
-            if cursor.rowcount:
+            rowcount = self._resolved_rowcount(conn, cursor)
+            if rowcount:
                 self._record_message_change(
                     conn, ConversationChangeType.MESSAGE_UPSERT, session_id, row_id,
                 )
-            return cursor.rowcount
+            return rowcount
         return self._execute_write(_do)
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:

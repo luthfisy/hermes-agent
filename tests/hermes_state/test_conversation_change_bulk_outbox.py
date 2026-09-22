@@ -70,6 +70,31 @@ def test_user_content_rewrite_emits_upsert(db):
     assert rows[0]["content_hash"] != old_hash
 
 
+def test_negative_driver_rowcount_uses_sqlite_changes_fallback(db):
+    class NegativeCursor:
+        rowcount = -1
+
+    class ChangesResult:
+        @staticmethod
+        def fetchone():
+            return (1,)
+
+    class FakeConn:
+        @staticmethod
+        def execute(sql):
+            assert sql == "SELECT changes()"
+            return ChangesResult()
+
+    assert db._resolved_rowcount(FakeConn(), NegativeCursor()) == 1
+
+
+def test_user_content_rewrite_miss_does_not_publish_outbox_event(db):
+    _clear(db)
+
+    assert db.set_user_message_content("sess-index", 999_999, "expanded") == 0
+    assert _events(db) == []
+
+
 def test_batch_blank_row_repair_emits_upsert(db):
     row_id = db.append_message("sess-index", role="assistant", content="")
     _clear(db)
