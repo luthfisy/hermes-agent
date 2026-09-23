@@ -126,7 +126,7 @@ def test_uninstall_skips_cache_refresh_when_no_launcher_entry(tmp_path, monkeypa
     assert refreshed == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+@pytest.mark.platforms("posix")  # POSIX symlink semantics
 def test_remove_path_handles_symlink(tmp_path):
     target = tmp_path / "real"
     target.mkdir()

@@ -31,7 +31,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.colors import Colors, color
@@ -49,6 +49,22 @@ from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F
 from utils import atomic_replace, fast_safe_load, file_signature
 
 logger = logging.getLogger(__name__)
+
+
+def is_uv_tool_install() -> bool:
+    # Shim to stop the old updater doing work until relaunch, not select uv tool.
+    return False
+
+
+def is_unsupported_install_method(method: str) -> bool:
+    # Shim to stop the old updater doing work until relaunch. no legacy detection.
+    return False
+
+
+def format_unsupported_install_warning(method: str) -> str:
+    # Shim to stop the old updater doing work until relaunch. no obsolete advice.
+    return ""
+
 
 # (config_path, mtime_ns, size) tuples already warned about, so concurrent CLI/gateway
 # loads of a broken config.yaml don't spam stderr. A changed file (new mtime) warns again.
@@ -325,7 +341,7 @@ _SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-m
 
 def _install_method_stamp(path: Path) -> Optional[str]:
     try:
-        method = path.read_text(encoding="utf-8").strip().lower()
+        method = path.read_text(encoding="utf-8-sig").strip().lower()
     except OSError:
         return None
     return method if method in _SUPPORTED_INSTALL_METHODS else None
@@ -372,7 +388,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     # A .git directory, or a ``gitdir:`` pointer file for worktrees.
     git_path = root / ".git"
     try:
-        if git_path.is_dir() or git_path.read_text(encoding="utf-8").strip().startswith("gitdir:"):
+        if git_path.is_dir() or git_path.read_text(encoding="utf-8-sig").strip().startswith("gitdir:"):
             return "git"
     except OSError:
         pass
@@ -478,7 +494,7 @@ def get_container_exec_info() -> Optional[dict]:
 
     try:
         info = {}
-        with open(get_hermes_home() / ".container-mode", "r", encoding="utf-8") as f:
+        with open(get_hermes_home() / ".container-mode", "r", encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -512,7 +528,7 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f)
     except FileNotFoundError:
         return
@@ -581,7 +597,7 @@ def _ensure_default_soul_md(home: Path) -> None:
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         try:
-            existing = soul_path.read_text(encoding="utf-8")
+            existing = soul_path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             return
         if not is_legacy_template_soul(existing):
@@ -1004,7 +1020,7 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
         return latest, latest
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             config = fast_safe_load(f)
     except Exception as e:
         _warn_config_parse_failure(config_path, e)
@@ -2000,7 +2016,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
         try:
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8-sig") as f:
                 data = fast_safe_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
@@ -2028,7 +2044,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if config_path is None:
         config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f) or {}
     except FileNotFoundError:
         return {}
@@ -2078,7 +2094,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             loaded = fast_safe_load(f)
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
@@ -2356,7 +2372,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         if user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
+                with open(config_path, encoding="utf-8-sig") as f:
                     user_config = fast_safe_load(f) or {}
 
                 if "max_turns" in user_config:
@@ -2518,6 +2534,18 @@ def load_env() -> Dict[str, str]:
     from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
 
     return load_env_file(get_env_path())
+
+
+def _parse_env_value(raw_value: str) -> str:
+    """Frozen compat surface name (tests/compat/old_updater_surface.json).
+
+    Pre-PM updaters lazy-import ``hermes_cli.config._parse_env_value`` after the
+    checkout swap. The tokenizer moved to ``agent.secret_scope._parse_env_value``
+    (c849bc383a), so this forwards there — behavior-preserving by construction.
+    """
+    from agent.secret_scope import _parse_env_value as _parse
+
+    return _parse(raw_value)
 
 
 def invalidate_env_cache() -> None:
@@ -2976,7 +3004,7 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
 
     configured = lambda *names: 'configured' if all(get_env_value(n) for n in names) else '(not set)'  # noqa: E731
-    default_img = 'nikolaik/python-nodejs:python3.11-nodejs20'
+    default_img = 'nikolaik/python-nodejs:python3.14-nodejs22'
     backend_lines = {
         'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
         'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
@@ -3991,7 +4019,7 @@ def _platform_plugin_manifests():
             if manifest_path is None:
                 continue
             try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
+                with open(manifest_path, "r", encoding="utf-8-sig") as f:
                     manifest = fast_safe_load(f) or {}
             except Exception:
                 continue

@@ -153,6 +153,7 @@ class TestMatcher:
 # ── End-to-end subprocess behaviour ───────────────────────────────────────
 
 
+@pytest.mark.platforms("linux")
 class TestCallbackSubprocess:
 
 
@@ -716,6 +717,7 @@ class TestEvaluateResult:
 
 
 class TestFailSemanticsEndToEnd:
+    @pytest.mark.platforms("linux")
     def test_exit_2_script_blocks(self, tmp_path):
         script = _write_script(
             tmp_path, "exit2.sh",
@@ -743,6 +745,7 @@ class TestFailSemanticsEndToEnd:
         assert result is not None and result["action"] == "block"
         assert "failed closed" in result["message"]
 
+    @pytest.mark.platforms("linux")
     def test_run_once_reflects_exit_2_block(self, tmp_path):
         """hermes hooks test must mirror production semantics."""
         script = _write_script(
@@ -760,6 +763,7 @@ class TestFailSemanticsEndToEnd:
         assert result["returncode"] == 2
         assert result["parsed"] == {"action": "block", "message": "denied"}
 
+    @pytest.mark.platforms("linux")
     def test_run_once_reflects_fail_closed_timeout(self, tmp_path):
         script = _write_script(
             tmp_path, "sleepy.sh",
@@ -781,7 +785,7 @@ class TestFailSemanticsEndToEnd:
 
 
 class TestRoutedProfileEnv:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_hook_child_sees_routed_profile_home_and_no_default_secrets(self, tmp_path, monkeypatch):
         """Under multiplexing the child gets the ROUTED HERMES_HOME, the default profile's secrets
         stay out of its env, and the payload names the firing profile."""
@@ -816,7 +820,7 @@ class TestRoutedProfileEnv:
 # faking ``sys.platform``.
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_bare_script_hook_path_executes_on_windows(tmp_path):
     """A hook whose command is a bare script path — the shape every example in
     ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
@@ -837,7 +841,7 @@ def test_bare_script_hook_path_executes_on_windows(tmp_path):
     assert missing["error"] == "command not found"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_unroutable_script_hook_names_the_remediation(tmp_path):
     """A suffix we deliberately do not route still fails, but the diagnostic has to say what to do:
     the raw WinError text is localized, so a non-English Windows install could not act on it."""

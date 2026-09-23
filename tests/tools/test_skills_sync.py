@@ -51,7 +51,7 @@ class TestReadWriteManifest:
 
         assert result == {"old-skill": "", "new-skill": "abc123"}
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    @pytest.mark.platforms("posix")  # POSIX permission bits are platform-specific
     def test_write_manifest_preserves_existing_file_mode(self, tmp_path):
         manifest_file = tmp_path / ".bundled_manifest"
         manifest_file.write_text("old-skill:oldhash\n", encoding="utf-8")
@@ -141,7 +141,7 @@ class TestComputeRelativeDest:
     def test_preserves_category_structure(self):
         bundled = Path("/repo/skills")
         dest = _compute_relative_dest(Path("/repo/skills/mlops/axolotl"), bundled)
-        assert str(dest).endswith("mlops/axolotl")
+        assert str(dest).endswith(os.path.join("mlops", "axolotl"))
         # Flat (uncategorized) skills keep their own name.
         assert _compute_relative_dest(Path("/repo/skills/simple"), bundled).name == "simple"
 

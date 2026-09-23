@@ -277,7 +277,7 @@ def test_turn_report_books_the_delivery_while_the_child_still_lingers(tmp_path):
             proc.wait(timeout=10)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_delivery_child_runs_in_the_target_home_not_the_schedulers_cwd(tmp_path, monkeypatch):
     """The spawn pins ``cwd`` to the target home: a scheduler left in a reaped kanban scratch
     workspace must not hand its dead cwd to the child, which then dies before argv (#102941)."""
@@ -309,7 +309,7 @@ def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
     assert time.monotonic() - started < 8
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_bot_chat_turn_keeps_failure_tail_under_non_utf8_parent(tmp_path):
     """The gateway parent's locale codec, not the child's UTF-8, decides the decode: a parent
     outside UTF-8 mode with a C locale (the Linux twin of the cp1252 gateway parent on Windows)
@@ -343,7 +343,7 @@ def test_bot_chat_turn_keeps_failure_tail_under_non_utf8_parent(tmp_path):
     assert result["stderr"] == "relat\ufffd\ufffdrio n\ufffd\ufffd 3: falhou\n"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_bot_chat_turn_failure_tail_decodes_lossily(tmp_path):
     """The exit-1 tail is still surfaced (with U+FFFD for the bad byte) instead of
     vanishing when the drain thread dies at the first undecodable byte (#105582)."""
@@ -355,7 +355,7 @@ def test_bot_chat_turn_failure_tail_decodes_lossily(tmp_path):
     assert result.stderr == "boom before \ufffd after\n"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_bot_chat_turn_roundtrips_accented_utf8_reply(tmp_path):
     """The delivery child writes UTF-8 unconditionally — hermes_cli reconfigures its
     own streams via hermes_bootstrap on Windows even under PYTHONIOENCODING=cp1252 —

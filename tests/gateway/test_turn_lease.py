@@ -213,11 +213,17 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner._run_agent = pytest.fail
     runner._post_turn_goal_continuation = AsyncMock()
 
+    acquire = AsyncMock(wraps=runner._turn_leases.acquire)
+    monkeypatch.setattr(runner._turn_leases, "acquire", acquire)
     try:
-        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=1)
+        # Dispatch includes admission, thread hops and cleanup outside the lease
+        # wait. Bound hangs here; assert the actual lease budget separately.
+        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=10)
     finally:
         assert runner._turn_leases.release(holder) is True
 
+    acquire.assert_awaited_once()
+    assert acquire.await_args_list[0].kwargs["timeout"] == 0.02
     assert isinstance(response, str)
     assert "not processed" in response.lower()
     assert "resend" in response.lower()

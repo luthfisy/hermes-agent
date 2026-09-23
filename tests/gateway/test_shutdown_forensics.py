@@ -106,7 +106,7 @@ def child_with_secret_argv():
 
 class TestArgvFreePersistence:
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_snapshot_and_log_line_identify_process_without_argv(self, child_with_secret_argv):
         """/proc-backed summaries keep pid/name/ppid/state but never the command line, so neither
         the JSON snapshot nor the warning line can carry a credential from a parent's argv."""
@@ -127,11 +127,11 @@ class TestArgvFreePersistence:
 # ---------------------------------------------------------------------------
 
 class TestSpawnAsyncDiagnostic:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         self._assert_diagnostic_written(tmp_path)
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_spawns_without_gnu_timeout_on_macos(self, tmp_path):
         """Stock macOS has no ``timeout`` binary and BSD ``ps``; the diagnostic still lands."""
         self._assert_diagnostic_written(tmp_path)
@@ -166,7 +166,7 @@ class TestSpawnAsyncDiagnostic:
         assert ps_section and ps_section[0].split()[:2] == ["PID", "PPID"], \
             "ps column header must lead the listing, not sort as a 0.0-cpu row"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_diagnostic_log_omits_child_argv_and_is_owner_only(self, tmp_path, child_with_secret_argv):
         """The detached ps/pstree walk must not write any process's argv to disk, and the log
         (even one created 0644 by an earlier release) ends up owner-only."""

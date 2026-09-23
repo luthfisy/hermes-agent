@@ -32,7 +32,7 @@ requires_posix_handoff = pytest.mark.skipif(
 # Stands in for `hermes`: answers the `update --help` probe (so --keep-stash
 # is kept), and appends every non-help invocation's argv as one JSON line so
 # the tests can inspect exactly what the update was invoked with.
-FAKE_HERMES = """#!/bin/bash
+FAKE_HERMES = """#!/usr/bin/env bash
 case "$*" in *--help*) echo "--keep-stash"; exit 0 ;; esac
 printf '%s\\n' "$*" >> "$HERMES_TEST_ARGV"
 exit 0
@@ -48,7 +48,8 @@ def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
     hermes.chmod(0o755)
 
     argv_log = tmp_path / "argv.jsonl"
-    env = {**os.environ, "TMPDIR": str(tmp_path), "HERMES_TEST_ARGV": str(argv_log)}
+    # posix.sh honours an ambient HERMES_HOME; the result file must land where this test looks.
+    env = {**os.environ, "TMPDIR": str(tmp_path), "HERMES_TEST_ARGV": str(argv_log), "HERMES_HOME": str(tmp_path)}
     subprocess.run(
         ["/bin/bash", str(SHIM_DIR / "posix.sh"), "--install-root", str(install_root), "--no-ui", *extra_args],
         env=env,

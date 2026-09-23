@@ -1,0 +1,387 @@
+name: Stable Release
+run-name: Stable release ${{ inputs.tag }}
+
+# Dispatch on the tag so reusable workflows and github.sha identify the same tree.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact annotated claim tag, matching the selected workflow ref
+        required: true
+        type: string
+      baseline-manifest:
+        description: Optional HTTPS manifest of the previous published stable packages
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    name: Admit the claim
+    # A read token cannot see a draft release, so gh release view answers
+    # "release not found" for a draft that exists. Write is the permission
+    # that can read it.
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    outputs:
+      claim-tag: ${{ steps.admit.outputs.claim-tag }}
+      claim-object: ${{ steps.admit.outputs.claim-object }}
+      tag: ${{ steps.admit.outputs.tag }}
+      commit: ${{ steps.admit.outputs.commit }}
+      version: ${{ steps.admit.outputs.version }}
+      release-id: ${{ steps.admit.outputs.release-id }}
+      release-epoch: ${{ steps.admit.outputs.release-epoch }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - id: admit
+        run: python -m scripts.releases.stable admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CLAIM_TAG: ${{ inputs.tag }}
+
+  ci:
+    name: Full CI pipeline
+    needs: admit
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/ci.yaml
+    with:
+      release: true
+
+  docker:
+    name: Docker build and tests
+    needs: [admit, ci]
+    uses: ./.github/workflows/docker.yml
+    with:
+      release-phase: test
+      tag: ${{ needs.admit.outputs.tag }}
+      version: ${{ needs.admit.outputs.version }}
+      release-epoch: ${{ needs.admit.outputs.release-epoch }}
+
+  nix:
+    needs: [admit, ci, docker]
+    uses: ./.github/workflows/nix.yml
+    with:
+      release: true
+      version: ${{ needs.admit.outputs.version }}
+      release-epoch: ${{ needs.admit.outputs.release-epoch }}
+
+  pm-bundle:
+    needs: [admit, ci, docker]
+    uses: ./.github/workflows/pm-bundle.yml
+    with:
+      release: true
+      ref: ${{ github.sha }}
+      version: ${{ needs.admit.outputs.version }}
+      release-epoch: ${{ needs.admit.outputs.release-epoch }}
+
+  termux-checks:
+    needs: [ci, docker]
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/termux-verify.yml
+    with:
+      release: true
+
+  windows-live:
+    needs: [ci, docker]
+    uses: ./.github/workflows/windows-venv-e2e.yml
+    with:
+      release: true
+
+  install-e2e:
+    name: Install and update E2E
+    needs: [ci, docker]
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/install-e2e.yml
+    with:
+      release: true
+      route: all
+      tag-count: '3'
+      exclude-ref: ${{ inputs.tag }}
+
+  candidates:
+    name: Build signed release candidates
+    needs: [admit, ci, docker]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: candidate
+
+  transitions:
+    name: Pin actual OLD and NEW signed packages
+    needs: [admit, candidates]
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    outputs:
+      windows: ${{ steps.plan.outputs.windows }}
+      macos: ${{ steps.plan.outputs.macos }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - id: plan
+        run: python -m scripts.releases.stable transitions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+          RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
+          RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
+          CANDIDATE_MANIFEST_URL: ${{ needs.candidates.outputs.manifest-url }}
+          CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
+          BASELINE_MANIFEST_URL: ${{ inputs.baseline-manifest }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+
+  windows-packaged:
+    name: Windows signed-package acceptance
+    needs: transitions
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.transitions.outputs.windows) }}
+    uses: ./.github/workflows/install-e2e-windows-run.yml
+    with:
+      install-method: packaged-app
+      update-method: open-app-update
+      install-ref: ${{ matrix.old }}
+      leg-id: stable-${{ matrix.id }}
+      bundle-manifest-url: ${{ matrix.manifest }}
+      bundle-manifest-sha256: ${{ matrix.manifest_sha256 }}
+      bundle-arch: ${{ matrix.arch }}
+
+  macos-packaged:
+    name: macOS signed-package acceptance
+    needs: transitions
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.transitions.outputs.macos) }}
+    uses: ./.github/workflows/install-e2e-macos-run.yml
+    with:
+      install-method: packaged-app
+      update-method: open-app-update
+      install-ref: ${{ matrix.old }}
+      leg-id: stable-${{ matrix.id }}
+      bundle-manifest-url: ${{ matrix.manifest }}
+      bundle-manifest-sha256: ${{ matrix.manifest_sha256 }}
+      bundle-arch: ${{ matrix.arch }}
+
+  bootstrap-version:
+    name: Bootstrap installer release identity
+    needs: admit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.admit.outputs.commit }}
+      - name: Set up locked Python build tooling
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["dev"]'
+      - name: Stamp and verify the Cargo and Tauri release identity
+        env:
+          RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+          RELEASE_EPOCH: ${{ needs.admit.outputs.release-epoch }}
+          RELEASE_VERSION: ${{ needs.admit.outputs.version }}
+        run: |
+          set -euo pipefail
+          tree="$RUNNER_TEMP/bootstrap-release"
+          mkdir -p "$tree"
+          git archive "$RELEASE_COMMIT" | tar -x -C "$tree"
+          python -m scripts.releases.stamping --tree "$tree" \
+            --version "$RELEASE_VERSION" --release-epoch "$RELEASE_EPOCH"
+          actual="$(cargo metadata --no-deps --format-version 1 \
+            --manifest-path "$tree/apps/bootstrap-installer/src-tauri/Cargo.toml" \
+            | jq -r '.packages[] | select(.name == "hermes-bootstrap") | .version')"
+          test "$actual" = "$RELEASE_VERSION" || {
+            echo "::error::Bootstrap Cargo version $actual != $RELEASE_VERSION"
+            exit 1
+          }
+          HERMES_NIX_BUILD=1 uv build --wheel --sdist --out-dir "$RUNNER_TEMP/python-dist" "$tree"
+          RELEASE_DIST="$RUNNER_TEMP/python-dist" python - <<'PY'
+          import email.parser
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          expected = os.environ["RELEASE_VERSION"]
+          dist = Path(os.environ["RELEASE_DIST"])
+          wheel, = dist.glob("*.whl")
+          sdist, = dist.glob("*.tar.gz")
+          with zipfile.ZipFile(wheel) as archive:
+              metadata, = (name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+              wheel_version = email.parser.BytesParser().parsebytes(archive.read(metadata))["Version"]
+          with tarfile.open(sdist, "r:gz") as archive:
+              pkg_info, = (member for member in archive.getmembers()
+                           if member.name.endswith("/PKG-INFO") and member.name.count("/") == 1)
+              stream = archive.extractfile(pkg_info)
+              if stream is None:
+                  raise SystemExit("sdist PKG-INFO is unreadable")
+              sdist_version = email.parser.BytesParser().parse(stream)["Version"]
+          if wheel_version != expected or sdist_version != expected:
+              raise SystemExit(
+                  f"Python distribution version mismatch: wheel={wheel_version}, sdist={sdist_version}"
+              )
+          if f"-{expected}-" not in wheel.name or not sdist.name.endswith(f"-{expected}.tar.gz"):
+              raise SystemExit("Python distribution filename differs from the release version")
+          PY
+
+  acceptance:
+    name: All release acceptance checks pass
+    if: always()
+    needs: [admit, ci, docker, nix, pm-bundle, termux-checks, windows-live, install-e2e, candidates, transitions, windows-packaged, macos-packaged, bootstrap-version]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates transitions windows-packaged macos-packaged bootstrap-version
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+
+  publish-docker:
+    name: Publish tested Docker image
+    needs: [admit, acceptance]
+    uses: ./.github/workflows/docker.yml
+    with:
+      release-phase: publish
+      tag: ${{ needs.admit.outputs.tag }}
+      version: ${{ needs.admit.outputs.version }}
+      release-epoch: ${{ needs.admit.outputs.release-epoch }}
+
+  publish-bundles:
+    name: Publish tested bundle artifacts
+    needs: [admit, acceptance, candidates]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: publish
+      manifest-sha256: ${{ needs.candidates.outputs.manifest-sha256 }}
+
+  publication:
+    name: All artifact publication succeeded
+    if: always()
+    needs: [acceptance, publish-docker, publish-bundles]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+
+  complete:
+    name: Stable release is green
+    if: always()
+    needs: [admit, ci, docker, acceptance, candidates, publication, publish-docker, windows-packaged, macos-packaged]
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - name: Set up the native identity reader
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          cache-python: false
+      - run: python -m scripts.releases.stable gate admit ci docker acceptance candidates publication publish-docker
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+      - name: Create the final tag and retarget the accepted release
+        run: python -m scripts.releases.stable complete
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+          RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
+          RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
+          RELEASE_ID: ${{ needs.admit.outputs.release-id }}
+          CANDIDATE_MANIFEST_URL: ${{ needs.candidates.outputs.manifest-url }}
+          CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
+          DOCKER_MANIFEST_DIGEST: ${{ needs.publish-docker.outputs.manifest-digest }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+      - name: Render the admitted candidate smoke results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+          CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
+        run: |
+          python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT"
+      - name: Set up Docker Buildx for ordered alias promotion
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to Docker Hub for ordered alias promotion
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Reconcile ordered stable publication
+        run: python -m scripts.releases.sequencer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ''
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}

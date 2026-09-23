@@ -15,6 +15,7 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
+from tests.pm._fixtures import client, isolated_python  # noqa: F401
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -29,7 +30,7 @@ def _commit(repo: Path, msg: str) -> str:
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(client, tmp_path, monkeypatch):
     """A file:// plugin repo with two commits, a catalog pinned to the FIRST, an isolated plugins dir."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -40,11 +41,32 @@ def world(tmp_path, monkeypatch):
     (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v2\n")
     sha2 = _commit(repo, "v2")
 
-    plugins_dir = tmp_path / "plugins"
-    plugins_dir.mkdir()
+    home = tmp_path / "home"
+    plugins_dir = home / "plugins"
+    plugins_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
     monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: False)
     monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda *a, **k: None})())
+
+    def publish_without_environment(
+        *_args, staged_plugin=None, selection=None, **_kwargs
+    ):
+        from hermes_cli.runtime_state import finish_publication
+        from pm import paths
+        from pm.publication import PluginSelection, StagedPlugin
+
+        assert (staged_plugin is None) != (selection is None)
+        if staged_plugin is not None:
+            change = StagedPlugin(staged_plugin)
+        else:
+            assert selection is not None
+            change = PluginSelection(selection)
+        change.publish(paths.repo_root())
+        finish_publication(paths.repo_root())
+
+    # Catalog behavior is independent of dependency-environment construction.
+    monkeypatch.setattr("pm.client.sync_venv", publish_without_environment)
 
     # Catalog: one entry pinned to sha1, mutable via state["pin"]; kill list via state["removed"]. The
     # real loader is https-only, so the fixture entry is built directly (file:// repo).
@@ -82,7 +104,7 @@ def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world,
     target, _m, name = cat.install_catalog_entry(entry, force=False)
     assert name == "cat-plugin"
     assert _head(target) == world["sha1"] != world["sha2"]  # pinned, not HEAD
-    sidecar = json.loads((target / cat.CATALOG_SIDECAR).read_text())
+    sidecar = cat.catalog_install_record(target)
     assert (sidecar["catalog_name"], sidecar["sha"]) == ("cat-plugin", world["sha1"])
     assert cat.catalog_annotation(target) == f"catalog:community@{world['sha1'][:8]}"
 
@@ -107,7 +129,7 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
     with pytest.raises(SystemExit):
         pc.cmd_install("cat-plugin", enable=False)
     pc.cmd_install("cat-plugin", enable=False, allow_removed=True)
-    assert (world["plugins_dir"] / "cat-plugin" / cat.CATALOG_SIDECAR).exists()
+    assert cat.catalog_install_record(world["plugins_dir"] / "cat-plugin") is not None
     assert cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin",
                                   cat.resolved_removed_entries()) == "malware"
 
@@ -170,7 +192,7 @@ def test_repin_keeps_local_files_backs_up_edits_and_follows_manifest_rename(worl
     target, _m, _n = cat.install_catalog_entry(entry, force=False)
     (target / "config.yaml").write_text("api_key: real\n")                      # installer/user data
     (target / "__init__.py").write_text("def register(ctx):\n    pass  # mine\n")  # tracked edit
-    pc._save_enabled_set({"cat-plugin"})
+    pc._write_config_value("plugins", "enabled", ["cat-plugin"])
     # New pin renames the manifest.
     repo = world["repo"]
     (repo / "plugin.yaml").write_text("name: cat-plugin-v2\nversion: 2.0.0\ndescription: d\n")

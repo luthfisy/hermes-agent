@@ -15,15 +15,14 @@ import * as path from 'node:path'
 
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
   type Sandbox,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
+  waitForAppReady
 } from './fixtures'
 import { type ElectronApplication, expect, type Page, test } from './test'
 

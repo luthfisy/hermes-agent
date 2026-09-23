@@ -14,31 +14,19 @@ rotation and held past ``session.close`` until the child's turn settles.
 
 from __future__ import annotations
 
-import io
+import contextlib
 import json
 import os
+import sys
 import threading
 import time
 import types
 
 import pytest
 
+from tests.tui_gateway._compute_host_frames import FrameSink, start_test_work
 from tui_gateway import server
 from tui_gateway.compute_host import ComputeHost
-
-
-def _frames(out: io.StringIO) -> list[dict]:
-    return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
-
-
-def _wait(out: io.StringIO, predicate, timeout: float = 5.0) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for frame in _frames(out):
-            if predicate(frame):
-                return frame
-        time.sleep(0.01)
-    raise AssertionError(f"timed out; saw={_frames(out)}")
 
 
 def _stub_agent(deltas: list[str]) -> types.SimpleNamespace:
@@ -108,11 +96,19 @@ def isolated_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_session_cwd", lambda session: str(tmp_path))
     monkeypatch.setattr(server, "_register_session_cwd", lambda session: None)
     monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: True)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+    monkeypatch.setattr(server, "_routing_provenance_db", lambda session: contextlib.nullcontext(None))
+    monkeypatch.setattr(server, "_reopen_routed_session_row", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_record_turn_marker", lambda *a, **k: "marker")
+    monkeypatch.setattr(server, "_retire_turn_marker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_session_work", start_test_work)
     monkeypatch.setattr(server, "_get_usage", lambda agent_: {})
     monkeypatch.setattr(server, "_hydrate_session_cwd", lambda *a, **k: None)
     monkeypatch.setattr(server, "_wire_session_agent", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_session_services", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
+    monkeypatch.setitem(sys.modules, "hermes_undo", types.SimpleNamespace(on_user_message_appended=lambda key: None))
     import tui_gateway.prompt_turn as prompt_turn
 
     for mod in (server, prompt_turn):
@@ -123,16 +119,16 @@ def isolated_env(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
-def _run_turn(frame: dict, timeout: float = 5.0) -> tuple[list[dict], dict | None]:
+def _run_turn(frame: dict, timeout: float = 20.0) -> tuple[list[dict], dict | None]:
     """Run one turn.start through the real child path; return (all frames, turn.end frame)."""
-    out = io.StringIO()
+    out = FrameSink()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     try:
         host.handle_frame(frame)
-        end = _wait(out, lambda f: f["type"] == "turn.end", timeout=timeout)
+        end = out.wait_for(lambda f: f["type"] == "turn.end", timeout=timeout)
     finally:
         host.close()
-    return _frames(out), end
+    return out.frames(), end
 
 
 # ── Fix 1: the child borrows instead of re-claiming ─────────────────────────

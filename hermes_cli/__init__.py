@@ -3,8 +3,14 @@
 import os
 import sys
 
-__version__ = "0.21.4"
 __release_date__ = "2026.9.21"
+
+# A checkout carries no version. The release stamps ``_version.py`` into the build
+# tree; without it the tree reports the placeholder, never a number read from git.
+try:
+    from hermes_cli._version import __version__  # type: ignore[import-not-found]
+except ImportError:
+    __version__ = "0.0.0"
 
 
 def _ensure_utf8():
@@ -29,7 +35,7 @@ def _ensure_utf8():
                 reconfigure(encoding="utf-8", errors="replace")
             else:
                 # No reconfigure(): reopen the fd as UTF-8 (closefd=False keeps the original fd open).
-                new_stream = open(stream.fileno(), "w", encoding="utf-8", errors="replace",
+                new_stream = open(stream.fileno(), "w", encoding="utf-8", errors="replace",  # windows-footgun: ok (stdout re-open for write, not a read)
                                   buffering=1, closefd=False)
                 setattr(sys, stream_name, new_stream)
             repaired = True

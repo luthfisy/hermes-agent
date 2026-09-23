@@ -100,7 +100,7 @@ class TestCodexCloudflareHeaders:
     def test_residency_header_from_jwt_claims(self, monkeypatch):
         """#23896: residency-enforced workspaces 401 without x-openai-internal-codex-residency.
         chatgpt_data_residency wins; chatgpt_compute_residency is the fallback; and the two
-        models-catalog probes (picker via httpx, context-length via requests) send it on the
+        models-catalog probes (picker via httpx, context-length via model_metadata_http) send it on the
         wire — not just the shared helper."""
         import sys
 
@@ -124,14 +124,15 @@ class TestCodexCloudflareHeaders:
 
         class _FakeHttp:
             @staticmethod
-            def get(url, headers=None, timeout=None, verify=None):
+            def get(url, headers=None, timeout=None, verify=None, **kwargs):
                 sent.append(dict(headers or {}))
                 return _FakeResp()
 
         monkeypatch.setitem(sys.modules, "httpx", _FakeHttp)
         codex_models._fetch_models_from_api(access_token=compute_only)
-        monkeypatch.setattr(model_metadata, "requests", _FakeHttp)
-        monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
+        # The context-length probe goes through the shared model_metadata_http seam.
+        from agent import model_metadata_http
+        monkeypatch.setattr(model_metadata_http, "get", _FakeHttp.get)
         monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
         model_metadata._fetch_codex_oauth_context_lengths_with_source(compute_only)
 

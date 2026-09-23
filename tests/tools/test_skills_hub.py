@@ -1,6 +1,7 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import os
 import time
 from typing import List, Optional
 from unittest.mock import patch, MagicMock
@@ -698,7 +699,7 @@ class TestCheckForSkillUpdates:
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("same content")
         (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+        (skill_dir / "references" / "checklist.md").write_bytes(b"- [ ] security\n")
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
@@ -1127,8 +1128,8 @@ class TestOptionalSkillSourceBinaryAssets:
         (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.wav").write_bytes(
             wav_bytes
         )
-        (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_text(
-            "hello\n", encoding="utf-8"
+        (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_bytes(
+            b"hello\n"
         )
         pycache_dir = skill_dir / "assets" / "neutts-cli" / "src" / "neutts_cli" / "__pycache__"
         pycache_dir.mkdir(parents=True)
@@ -1140,8 +1141,8 @@ class TestOptionalSkillSourceBinaryAssets:
         bundle = src.fetch("official/mlops/models/neutts")
 
         assert bundle is not None
-        assert bundle.files["assets/neutts-cli/samples/jo.wav"] == wav_bytes
-        assert bundle.files["assets/neutts-cli/samples/jo.txt"] == b"hello\n"
+        assert bundle.files[os.path.join("assets", "neutts-cli", "samples", "jo.wav")] == wav_bytes
+        assert bundle.files[os.path.join("assets", "neutts-cli", "samples", "jo.txt")] == b"hello\n"
         assert "assets/neutts-cli/src/neutts_cli/__pycache__/cli.cpython-312.pyc" not in bundle.files
 
     def test_fetch_rejects_sibling_directory_traversal(self, tmp_path):
@@ -1358,7 +1359,7 @@ class TestQuarantineBundleBinaryAssets:
         assert (q_path / "SKILL.md").read_bytes() == bundle.files["SKILL.md"].encode("utf-8")
         assert content_hash(q_path) == bundle_content_hash(bundle)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_quarantine_bundle_hash_matches_bundle_on_windows(self, tmp_path):
         """Real Windows text mode: the quarantined SKILL.md hashes like the fetched bundle (#117181)."""
         import tools.skills_hub as hub

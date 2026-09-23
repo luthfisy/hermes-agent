@@ -74,7 +74,7 @@ def cleared_fact_caches():
     facts.clear_caches()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_native_arch_matches_registry_identifier(cleared_fact_caches) -> None:
     winreg = importlib.import_module("winreg")
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, facts._CPU_KEY) as key:
@@ -84,13 +84,13 @@ def test_windows_native_arch_matches_registry_identifier(cleared_fact_caches) ->
     assert facts.native_arch() == expected
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_macos_live_cpu_facts(cleared_fact_caches) -> None:
     assert facts.cpu_model()
     assert facts.native_arch() in {"arm64", "amd64"}
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_linux_live_cpu_facts_match_cpuinfo(cleared_fact_caches) -> None:
     cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
 

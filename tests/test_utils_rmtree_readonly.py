@@ -43,7 +43,7 @@ def test_checkpoint_clear_all_removes_tree_with_read_only_object(tmp_path):
     assert not root.exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_removes_read_only_file_in_writable_directory(tmp_path):
     """The Git-for-Windows shape: the file is read-only, its directory is writable."""
     root = tmp_path / "plugins" / "demo"

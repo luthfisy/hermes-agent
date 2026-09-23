@@ -177,12 +177,12 @@ _Platform__bundled_plugin_aliases: Optional[dict] = None  # manifest ``name:`` (
 def _bundled_platform_manifest_name(plugin_dir: Path) -> Optional[str]:
     """Lowercased ``name:`` from a bundled platform's plugin manifest (None when absent/unreadable)."""
     try:
-        import yaml
+        from hermes_yaml import safe_load
         manifest_file = next(
             (plugin_dir / m for m in ("plugin.yaml", "plugin.yml") if (plugin_dir / m).exists()), None)
         if manifest_file is None:
             return None
-        data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        data = safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
         name = data.get("name") if isinstance(data, dict) else None
         return str(name).strip().lower() or None
     except Exception:

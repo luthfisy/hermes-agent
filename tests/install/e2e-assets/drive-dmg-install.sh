@@ -40,7 +40,12 @@ shot() {
 "$APP_BIN" &
 SETUP_PID=$!
 log "launched $APP_BIN (pid $SETUP_PID)"
-cleanup() { kill "$SETUP_PID" 2>/dev/null || true; }
+cleanup() {
+  kill "$SETUP_PID" 2>/dev/null || true
+  if [ -d "$HOME/.hermes/logs" ]; then
+    cp -R "$HOME/.hermes/logs" "$PROOF_DIR/bootstrap-logs"
+  fi
+}
 trap cleanup EXIT
 
 # Wait for the installer window, then click the install button. The webview's
@@ -77,10 +82,10 @@ click_install() {
   set -- $geo
   local x=$1 y=$2 wd=$3 ht=$4
   if [ -n "$LAST_ERR" ]; then
-    # Error screen: Retry install sits left of center at ~59% height
-    # (measured: button x 359-492, y 402-441 in the 880x620 window).
-    local cx=$((x + wd * 48 / 100))
-    local cy=$((y + ht * 59 / 100))
+    # Measured against the published installer: screen rect 359..492,391..430
+    # for a window at 72,58 sized 880x620.
+    local cx=$((x + wd * 40 / 100))
+    local cy=$((y + ht * 57 / 100))
     cliclick "c:${cx},${cy}" 2>&1 || true
     echo "clicked retry ${cx},${cy} (window ${x},${y} ${wd}x${ht})"
     return 0

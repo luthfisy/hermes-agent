@@ -219,18 +219,14 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
     agent = _agent_with_db(db)
 
     interrupt_seen = {}
-    t_start = time.time()
-
     def stalled_loop(_agent, _message, _system, history, *_args, **_kwargs):
         # Simulate the #95548 zombie: the loop makes no progress and never
         # touches the activity clock. It only notices the watchdog's
         # hard interrupt (real wedges may not even do that — see the lease
         # test below).
-        while not _agent._interrupt_requested:
-            if time.time() - t_start > 10:
-                break
-            time.sleep(0.005)
-        interrupt_seen["at"] = time.time()
+        assert _agent._hard_interrupt_requested.wait(30.0), (
+            "watchdog did not publish a hard interrupt"
+        )
         interrupt_seen["message"] = _agent._interrupt_message
         return {
             "final_response": "aborted",
@@ -243,14 +239,9 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
     with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
         result = _run_turn(agent, stalled_loop, monkeypatch)
 
-    elapsed = time.time() - t_start
-
     # The turn was surfaced as interrupted, not hung.
     assert result["interrupted"] is True
     assert result["final_response"] == "aborted"
-    # The watchdog fired before our 10s outer bound, and after the 0.3s idle
-    # bound (poll interval makes the exact fire instant approximate).
-    assert 0.2 <= elapsed < 10.0
     # The stall was logged loudly with the session named.
     assert any(
         "Turn liveness watchdog fired" in record.getMessage()

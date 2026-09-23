@@ -33,12 +33,12 @@ def _clear_cpr_env(monkeypatch):
 class TestClassicCliOutputSelection:
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_preserves_default_output_selection(self):
         assert _terminal_may_leak_cpr() is False
         assert _select_classic_cli_pt_output(sys.stdout) is None
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_honors_explicit_no_cpr(self, monkeypatch):
         monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "1")
         assert _terminal_may_leak_cpr() is True
@@ -57,7 +57,7 @@ def _openpty_or_skip():
         pytest.skip(f"no PTY devices available: {exc}")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY harness")
+@pytest.mark.platforms("posix")  # POSIX PTY harness
 class TestDelayedCprLocalPtyLeak:
     def test_delayed_cpr_reply_leaks_when_enable_cpr_true(self):
         """Local (no SSH) delayed ESC[6n reply lands as ESC[39;1R on stdin."""

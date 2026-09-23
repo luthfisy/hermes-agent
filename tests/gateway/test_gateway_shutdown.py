@@ -171,26 +171,48 @@ async def test_planned_service_exit_issues_no_restart_of_its_own(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unexpected_signal_starts_teardown_after_bounded_interrupt_grace():
+    from types import SimpleNamespace
+
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.0
     runner._signal_initiated_shutdown = True
-    runner._signal_interrupt_grace_timeout = 0.01
-    runner._running_agents = {"session": MagicMock()}
+    runner._signal_interrupt_grace_timeout = 0.25
+    running_agent = MagicMock()
+    runner._running_agents = {"session": running_agent}
 
+    now = 0.0
+    sleeps = []
     disconnect_started = asyncio.Event()
 
+    async def advance_grace(delay):
+        nonlocal now
+        assert running_agent.interrupt.called
+        assert not disconnect_started.is_set()
+        sleeps.append(delay)
+        now += delay
+        await asyncio.sleep(0)
+
     async def disconnect():
+        assert runner._running_agents == {"session": running_agent}
         disconnect_started.set()
 
     adapter.disconnect = disconnect
+    # Advance only the shutdown clock. Real cleanup and executor scheduling do not
+    # consume the grace budget, and asyncio's own deadlines keep their real clock.
+    shutdown_asyncio = SimpleNamespace(**vars(asyncio))
+    shutdown_asyncio.get_running_loop = lambda: SimpleNamespace(time=lambda: now)
+    shutdown_asyncio.sleep = advance_grace
 
-    with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.publish_runtime_status"
+    with (
+        patch("gateway.status.remove_pid_file"),
+        patch("gateway.status.publish_runtime_status"),
+        patch("gateway.run_shutdown.asyncio", shutdown_asyncio),
     ):
-        stop_task = asyncio.create_task(runner.stop())
-        await asyncio.wait_for(disconnect_started.wait(), timeout=0.75)
-        await stop_task
+        await asyncio.wait_for(runner.stop(), timeout=10)
 
+    assert sleeps
+    assert sum(sleeps[:-1]) < runner._signal_interrupt_grace_timeout <= now
+    assert disconnect_started.is_set()
     assert runner._shutdown_event.is_set() is True
 
 

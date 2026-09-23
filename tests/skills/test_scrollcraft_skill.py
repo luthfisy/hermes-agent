@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 SKILL_DIR = Path(__file__).resolve().parents[2] / "optional-skills/web-development/scrollcraft"
 SKILL_MD = SKILL_DIR / "SKILL.md"

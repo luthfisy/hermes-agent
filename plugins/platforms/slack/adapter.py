@@ -13,13 +13,14 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
 
-import aiohttp
-
+aiohttp: Any = None
 try:
+    import aiohttp as _aiohttp
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.web.async_client import AsyncWebClient
 
+    aiohttp = _aiohttp
     SLACK_AVAILABLE = True
 except ImportError:
     SLACK_AVAILABLE = False
@@ -322,7 +323,11 @@ class _NativeTaskCardStream:
 
 
 def check_slack_requirements() -> bool:
-    """Lazy-install slack-bolt/slack-sdk if missing and rebind module globals on success."""
+    """Check if Slack dependencies are available.
+
+    Lazy-installs the ``slack`` pyproject extra via ``pm.extras.ensure_and_bind``
+    on first call if not present. Rebinds all module-level globals on success.
+    """
     if SLACK_AVAILABLE:
         return True
 
@@ -335,8 +340,9 @@ def check_slack_requirements() -> bool:
             "AsyncApp": AsyncApp, "AsyncSocketModeHandler": AsyncSocketModeHandler,
             "AsyncWebClient": AsyncWebClient, "aiohttp": aiohttp, "SLACK_AVAILABLE": True}
 
-    from tools.lazy_deps import ensure_and_bind
-    return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
+    from pm.extras import ensure_and_bind
+
+    return ensure_and_bind("slack", _import, globals())
 
 
 def _collect_slack_block_mentions(blocks: list) -> list:
@@ -6339,7 +6345,7 @@ def _load_slack_bot_tokens(raw_token: str, *, quiet: bool) -> List[str]:
             # File holds plaintext bot tokens; warn if group/world-readable.
             from utils import warn_if_credential_file_broadly_readable
             warn_if_credential_file_broadly_readable(tokens_file, label="[Slack]", log=logger)
-        saved = json.loads(tokens_file.read_text(encoding="utf-8"))
+        saved = json.loads(tokens_file.read_text(encoding="utf-8-sig"))
         for team_id, entry in saved.items():
             tok = entry.get("token", "") if isinstance(entry, dict) else ""
             if tok and tok not in tokens:

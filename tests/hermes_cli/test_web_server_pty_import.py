@@ -35,7 +35,7 @@ def test_web_server_exposes_pty_bridge_symbols():
     assert issubclass(_web_server_chat.PtyUnavailableError, BaseException)
 
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX-only")
+@pytest.mark.platforms("posix")  # POSIX-only
 def test_web_server_uses_posix_pty_bridge_on_posix():
     """On POSIX, the bridge must be the fcntl/termios PtyBridge."""
     from hermes_cli.pty_bridge import PtyBridge as PosixBridge

@@ -16,6 +16,8 @@ from tests.hermes_cli.test_update_fleet_restart_pending import (
     _make_head_moved_side_effect, _patch_update_deps, _update_args,
 )
 
+pytestmark = pytest.mark.usefixtures("isolated_source_completion")
+
 
 @pytest.fixture
 def hook_calls(monkeypatch):

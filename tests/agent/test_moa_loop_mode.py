@@ -536,27 +536,26 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
 def test_references_run_in_parallel(monkeypatch):
     """References fan out concurrently (delegate-batch semantics), not serially.
 
-    Each reference sleeps; wall-time must approximate the slowest single call,
-    not the sum. Order is preserved and a failing reference is isolated.
+    Both successful references must enter their calls before either can finish.
+    Order is preserved and a failing reference is isolated.
     """
-    import time
+    import threading
 
     from agent import moa_loop
 
     # Force _extract_text down its fallback path (no transport normalize).
     monkeypatch.setattr(moa_loop, "get_transport", lambda *_a, **_k: None)
 
-    barrier_hits = []
+    successful_calls_entered = threading.Barrier(2)
 
-    def slow_call_llm(**kwargs):
-        barrier_hits.append(time.monotonic())
+    def synchronized_call_llm(**kwargs):
         model = kwargs["model"]
         if model == "boom":
             raise RuntimeError("kaboom")
-        time.sleep(0.5)
+        successful_calls_entered.wait(timeout=5)
         return _response(f"resp-{kwargs['provider']}")
 
-    monkeypatch.setattr(moa_loop, "call_llm", slow_call_llm)
+    monkeypatch.setattr(moa_loop, "call_llm", synchronized_call_llm)
 
     refs = [
         {"provider": "p1", "model": "ok"},
@@ -565,22 +564,16 @@ def test_references_run_in_parallel(monkeypatch):
         {"provider": "p3", "model": "ok"},
     ]
 
-    start = time.monotonic()
     out = moa_loop._run_references_parallel(
         refs, [{"role": "user", "content": "hi"}], temperature=0.6, max_tokens=64
     )
-    elapsed = time.monotonic() - start
 
-    # Two 0.5s sleeps run concurrently → well under the 1.0s serial floor.
-    # Threshold sits at 0.95s (not tight against 0.5s) to tolerate CI
-    # thread-pool startup jitter while still failing hard if the two calls
-    # ran serially (which would be ≥1.0s).
-    assert elapsed < 0.95, f"references did not run in parallel (took {elapsed:.2f}s)"
     # Output order matches input order (stable Reference N labelling).
     assert [label for label, _, _ in out] == ["p1:ok", "moa:preset", "p2:boom", "p3:ok"]
     assert "recursively reference MoA" in out[1][1]
     assert out[2][1].startswith("[failed:")
     assert out[0][1] == "resp-p1"
+    assert out[3][1] == "resp-p3"
 
 
 def test_references_parallel_without_agent_is_unaffected(monkeypatch):

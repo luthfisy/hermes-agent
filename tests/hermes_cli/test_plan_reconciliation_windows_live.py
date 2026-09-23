@@ -19,9 +19,10 @@ sys.path.insert(0, str(WORKTREE))
 
 import pytest
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="live Windows E2E")
+pytestmark = pytest.mark.platforms("windows")  # live Windows E2E
 
 
+@pytest.mark.spawns_gateway_lookalike
 def test_plan_reconciliation_live_windows(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -29,7 +30,14 @@ def test_plan_reconciliation_live_windows(tmp_path, monkeypatch):
 
     # Real live process standing in for a manual gateway
     child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(120)"],
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(120)",
+            "hermes_cli.main",
+            "gateway",
+            "run",
+        ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:

@@ -146,16 +146,10 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
 
     from agent import curator
     from hermes_cli.web_routers import chat_ws
-    from hermes_constants import get_hermes_home
-    from tools import skill_usage
 
-    # The LLM pass only forks when an agent-created skill is a candidate: bundled
-    # built-ins are excluded from the review list, so the temp home needs one.
-    skill_dir = get_hermes_home() / "skills" / "console-cancel-probe"
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text("---\nname: console-cancel-probe\ndescription: x\n---\n", encoding="utf-8")
-    skill_usage.record_created("console-cancel-probe", agent_created=True)
-
+    # Candidate discovery is unrelated to console cancellation. Pin one candidate so the
+    # command always reaches the fork instead of depending on process-global skill caches.
+    monkeypatch.setattr(curator, "_render_candidate_list", lambda: "Agent-created skills (1):\n- console-cancel-probe")
     monkeypatch.setattr(
         curator, "_resolve_review_provider",
         lambda: ({"api_key": "test-key", "base_url": blocking_provider["base_url"]}, "test-model", "openai-compat", {}),
@@ -171,7 +165,14 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
 
     monkeypatch.setattr(chat_ws, "_execute_console_line", observed_execute)
     if stop == "timeout":
-        monkeypatch.setattr(chat_ws, "_CONSOLE_COMMAND_TIMEOUT_SECONDS", 2.0)
+        async def timeout_after_request_starts(worker):
+            while not blocking_provider["started"].is_set():
+                if worker.done():
+                    return worker.result()
+                await chat_ws.asyncio.sleep(0.01)
+            raise chat_ws.asyncio.TimeoutError
+
+        monkeypatch.setattr(chat_ws, "_wait_for_console_worker", timeout_after_request_starts)
     line = "curator run --consolidate --dry-run"
 
     with console_client.websocket_connect(_url()) as conn:

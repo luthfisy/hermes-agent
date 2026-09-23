@@ -56,7 +56,7 @@ def test_gateway_flag_is_conditional_not_inline() -> None:
     assert re.search(r"if \(\$NoGateway\)\s*\{\s*\n\s*\$gatewayArg = @\(\)", source), (
         "-NoGateway must empty $gatewayArg before the update argv is assembled."
     )
-    assert "$gatewayArg + @(\"--force\"" in source, (
+    assert "+ @('update', '--yes') + $gatewayArg +" in source, (
         "The update argv must be assembled from $gatewayArg so -NoGateway "
         "actually removes --gateway from the invocation."
     )

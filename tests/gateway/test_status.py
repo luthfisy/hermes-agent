@@ -572,8 +572,9 @@ class TestGetProcessStartTime:
 
     def test_live_process_is_stable_int(self):
         import subprocess
+        import sys
         import time
-        p = subprocess.Popen(["sleep", "20"])
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"], stdin=subprocess.DEVNULL)
         try:
             a = status._get_process_start_time(p.pid)
             time.sleep(0.2)
@@ -586,7 +587,7 @@ class TestGetProcessStartTime:
 
 
 class TestTerminatePid:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the real
         # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
@@ -651,7 +652,7 @@ class TestPidExistsZombieProbe:
         monkeypatch.setattr(psutil.Process, "status", spy)
         return calls
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_skips_zombie_status_probe(self, monkeypatch):
         # Faking os.name on POSIX proves nothing about the cost on the real host; the wine2e
         # runner receipt (red on main, green on the fix) is the live repro for this test.
@@ -659,7 +660,7 @@ class TestPidExistsZombieProbe:
         assert status._pid_exists(os.getpid()) is True
         assert calls == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_posix_still_probes_zombie_status(self, monkeypatch):
         # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.
         calls = self._spy_status(monkeypatch)
@@ -668,7 +669,7 @@ class TestPidExistsZombieProbe:
 
 
 class TestScopedLocks:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
         # byte-range locking path at all: msvcrt does not exist off Windows,
@@ -1169,6 +1170,7 @@ class TestScopedLockTakeover:
             "_read_process_cmdline",
             lambda _pid: "python -m hermes_cli.main gateway run",
         )
+        monkeypatch.setattr(status, "_snapshot_gateway_children", lambda _pid: [])
         calls = []
 
         def terminate(pid, *, force=False):
@@ -1289,6 +1291,7 @@ class TestPlannedStopMarker:
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
+    @pytest.mark.platforms("linux")
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
         monkeypatch.setattr(

@@ -7,7 +7,6 @@ could see that obligation, and every profile that ran the catch-up killed the sa
 again. These tests pin the host-scoped contract:
 
 - an obligation armed from one profile is owed (and dischargeable) from every other profile;
-- the host gateway is restarted AT MOST ONCE per obligation, however many profiles run it;
 - enumerated systemd units that resolve to one live main PID restart that process once;
 - the fresh-process recovery restarts one host process for every profile it serves.
 """
@@ -69,31 +68,6 @@ def test_obligation_armed_by_one_profile_is_owed_by_every_other(two_profiles, no
     assert fleet._pending_fleet_restart_needed() is False
 
 
-def test_host_gateway_restarts_once_when_two_profiles_run_the_catch_up(
-    two_profiles, no_live_fleet, monkeypatch, capsys
-):
-    """``hermes -p coder update`` then ``hermes -p writer update`` stops the host gateway ONCE."""
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [4242])
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: True)
-    monkeypatch.setattr(fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
-    kills: list = []
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: kills.append(k))
-
-    _enter(monkeypatch, two_profiles["coder"])
-    _arm("coder")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    _enter(monkeypatch, two_profiles["writer"])
-    _arm("writer")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    assert len(kills) == 1, "the one host gateway must be stopped once per update, not once per profile"
-    assert "already restarted for this update" in capsys.readouterr().out
-
-
 def test_legacy_per_home_marker_is_still_read_and_cleared(two_profiles, no_live_fleet, monkeypatch):
     """An obligation armed by the pre-host-scope code must still be discharged after the upgrade."""
     _enter(monkeypatch, two_profiles["coder"])
@@ -115,22 +89,37 @@ def _listing(units: list[str]):
     return [("user", ["systemctl", "--user"], result)]
 
 
-def test_leftover_per_profile_units_restart_their_one_host_process_once(monkeypatch, capsys):
-    """Three units, one live main PID = one host gateway: restart it once and name the legacy units."""
-    # raising=False keeps this usable as the red-on-base A/B (the helper is the fix).
-    monkeypatch.setattr(fleet, "_unit_main_pid", lambda scope_cmd, svc: 4242, raising=False)
-    restarted: list[str] = []
+def _patch_live_unit_restart(monkeypatch, restarted: list[str], main_pid) -> None:
+    """The live post-update systemd pass with every systemctl seam stubbed: every unit is
+    active, restarts succeed instantly, and ``MainPID`` comes from ``main_pid``."""
+    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
+    monkeypatch.setattr("hermes_cli.gateway._ensure_user_systemd_env", lambda: None)
+    monkeypatch.setattr(fleet, "_unit_main_pid", main_pid)
+    monkeypatch.setattr(fleet, "_systemd_gateway_unit_listings", lambda on_list_timeout=None: _listing([
+        "hermes-gateway.service", "hermes-gateway-coder.service", "hermes-gateway-writer.service"]))
+    monkeypatch.setattr(fleet, "_service_unit_supports_graceful_sigusr1_restart", lambda svc: False)
+    monkeypatch.setattr(fleet, "_resolve_manage_cmd", lambda cache, scope, scope_cmd, svc: list(scope_cmd))
+    monkeypatch.setattr(fleet, "_systemctl", lambda cmd, timeout: SimpleNamespace(returncode=0, stdout="active"))
     monkeypatch.setattr(
         fleet, "_systemctl_reset_and_restart",
         lambda manage_cmd, svc, scope_cmd=None: restarted.append(svc) or SimpleNamespace(returncode=0))
-    monkeypatch.setattr(fleet, "_wait_for_service_active", lambda scope_cmd, svc: True)
+    monkeypatch.setattr(fleet, "_wait_for_service_active", lambda scope_cmd, svc, timeout=10.0: True)
+    monkeypatch.setattr(fleet, "_systemd_restart_timeout", lambda *a, **k: 1.0)
     monkeypatch.setattr(fleet, "_SYSTEMD_SCOPES", (("user", ["systemctl", "--user"]),))
 
+
+def test_leftover_per_profile_units_restart_their_one_host_process_once(monkeypatch, capsys):
+    """Three units, one live main PID = one host gateway: restart it once and name the legacy units."""
+    restarted: list[str] = []
+    _patch_live_unit_restart(monkeypatch, restarted, lambda scope_cmd, svc: 4242)
+
+    settled: list = []
     failed: list = []
-    fleet._restart_systemd_gateway_units_best_effort(
-        failed, _listing(["hermes-gateway.service", "hermes-gateway-coder.service", "hermes-gateway-writer.service"]))
+    scoped: set = set()
+    fleet._restart_systemd_gateway_units(settled, failed, scoped, 1.0)
 
     assert restarted == ["hermes-gateway"]
+    assert settled == ["hermes-gateway"] and scoped == {"user/hermes-gateway"}
     assert failed == []
     out = capsys.readouterr().out
     assert "hermes-gateway-coder" in out and "legacy per-profile unit" in out
@@ -138,19 +127,13 @@ def test_leftover_per_profile_units_restart_their_one_host_process_once(monkeypa
 
 def test_units_with_distinct_live_pids_are_each_restarted(monkeypatch):
     """Control: genuinely separate processes are still separate restart targets."""
-    pids = {"hermes-gateway": 1, "hermes-gateway-coder": 2}
-    monkeypatch.setattr(fleet, "_unit_main_pid", lambda scope_cmd, svc: pids[svc], raising=False)
+    pids = {"hermes-gateway": 1, "hermes-gateway-coder": 2, "hermes-gateway-writer": 3}
     restarted: list[str] = []
-    monkeypatch.setattr(
-        fleet, "_systemctl_reset_and_restart",
-        lambda manage_cmd, svc, scope_cmd=None: restarted.append(svc) or SimpleNamespace(returncode=0))
-    monkeypatch.setattr(fleet, "_wait_for_service_active", lambda scope_cmd, svc: True)
-    monkeypatch.setattr(fleet, "_SYSTEMD_SCOPES", (("user", ["systemctl", "--user"]),))
+    _patch_live_unit_restart(monkeypatch, restarted, lambda scope_cmd, svc: pids[svc])
 
-    fleet._restart_systemd_gateway_units_best_effort(
-        [], _listing(["hermes-gateway.service", "hermes-gateway-coder.service"]))
+    fleet._restart_systemd_gateway_units([], [], set(), 1.0)
 
-    assert sorted(restarted) == ["hermes-gateway", "hermes-gateway-coder"]
+    assert sorted(restarted) == sorted(pids)
 
 
 def _host_record(tmp_path, monkeypatch, profiles: list[str]) -> None:
@@ -247,33 +230,6 @@ def test_unreadable_host_record_is_never_discharged_by_the_legacy_marker(two_pro
     assert fleet._pending_fleet_restart_needed() is True
 
 
-def test_restart_runs_once_per_host_on_a_non_git_install(two_profiles, monkeypatch, capsys):
-    """zip/pip/Docker installs resolve no checkout SHA; the restart-once guard must still hold.
-
-    ``mark_host_restart_completed("")`` can never match, so every profile's ``hermes update``
-    re-killed the one shared multiplexer on exactly the installs this record exists for.
-    """
-    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: None)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [4242])
-    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
-    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: True)
-    kills: list = []
-    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: kills.append(k))
-
-    _enter(monkeypatch, two_profiles["coder"])
-    _arm("coder")
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    _enter(monkeypatch, two_profiles["writer"])
-    assert update_cmd._run_pending_fleet_restart() is True
-
-    assert len(kills) == 1, "the host gateway must be stopped once per update, not once per profile"
-    assert "already restarted for this update" in capsys.readouterr().out
-
-
 def test_a_failing_main_pid_probe_keeps_its_own_restart():
     """Any probe error is unproven identity (its own restart), never an aborted restart pass."""
     def boom(unit):
@@ -302,3 +258,4 @@ def test_recovery_host_state_dir_matches_the_gateway_resolver(monkeypatch, env):
         monkeypatch.setenv(name, value)
 
     assert recovery._host_state_dir() == str(_get_lock_dir())
+

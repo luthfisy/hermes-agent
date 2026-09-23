@@ -71,5 +71,6 @@ def test_frozen_surface_covers_every_update_cmd_main_read():
 
 
 def test_removed_reexports_are_gone():
-    for name in ("_scan_dashboard_processes", "_warn_stale_dashboard_processes", "_self", "_PROVIDER_MODELS"):
+    # _self stays: it is on the frozen old-updater surface (tests/compat/old_updater_surface.json).
+    for name in ("_scan_dashboard_processes", "_warn_stale_dashboard_processes", "_PROVIDER_MODELS"):
         assert not hasattr(hermes_cli.main, name), name

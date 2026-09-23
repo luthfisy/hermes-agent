@@ -27,7 +27,7 @@ from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 from hermes_cli import dashboard_procs
 from hermes_cli import main_dashboard
 from hermes_cli import update_cmd
-from hermes_cli.update_cmd import _finish_dashboard_update_cleanup
+from hermes_cli import update_cmd_maint
 from hermes_cli.main_dashboard import _restart_managed_dashboard_service
 from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes as _warn_stale_dashboard_processes
 
@@ -37,18 +37,16 @@ def _refresh_bindings_against_live_module():
     """Rebind module-level names to the *current* defining modules.
 
     Other tests in the suite reload modules from ``sys.modules``; when that
-    happens on the same xdist worker before we run, our top-of-file bindings
+    happens in the same process before we run, our top-of-file bindings
     end up pointing at the *old* module object and ``patch("<module>.X")``
     patches the *new* one, so every patch becomes a no-op and the kill path
     silently returns early. Refreshing the bindings keeps them consistent.
     """
-    global _finish_dashboard_update_cleanup
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
     global _restart_managed_dashboard_service
     global _warn_stale_dashboard_processes
 
-    _finish_dashboard_update_cleanup = update_cmd._finish_dashboard_update_cleanup
     _find_stale_dashboard_pids = main_dashboard._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = dashboard_procs._kill_stale_dashboard_processes
     _restart_managed_dashboard_service = main_dashboard._restart_managed_dashboard_service
@@ -153,7 +151,7 @@ class TestFindStaleDashboardPids:
 
 
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan path")
+    @pytest.mark.platforms("posix")  # ps-based scan path
     def test_self_pid_excluded(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -174,18 +172,18 @@ class TestFindStaleDashboardPids:
         with patch("subprocess.run", side_effect=sp.TimeoutExpired("ps", 10)):
             assert _find_stale_dashboard_pids() == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_ps_timeout_returns_empty_linux(self):
         self._assert_ps_timeout_returns_empty()
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_ps_timeout_returns_empty_macos(self):
         self._assert_ps_timeout_returns_empty()
 
 
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
+@pytest.mark.platforms("posix")  # POSIX kill semantics
 class TestKillStaleDashboardPosix:
     """Kill path on Linux / macOS: SIGTERM then SIGKILL any survivors."""
 
@@ -277,9 +275,9 @@ class TestKillStaleDashboardPosix:
 class TestKillStaleDashboardWindows:
     """Kill path on Windows: taskkill /F."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_taskkill_invoked_for_each_pid(self, capsys):
-        """``windows_only``: ``taskkill.exe`` only exists on Windows, and the
+        """``platforms("windows")``: ``taskkill.exe`` only exists on Windows, and the
         faked platform also silently skipped the POSIX-only cgroup/argv
         snapshot the real Windows path must not take.
         """
@@ -328,7 +326,7 @@ class TestDashboardUpdateCleanup:
             return_value={"matched": [12345], "killed": [], "failed": [(12345, "denied")],
                           "unrecovered": []},
         ) as kill:
-            _finish_dashboard_update_cleanup([])
+            update_cmd_maint._refresh_dashboard_after_update()
 
         # The sweep only touches this home's backends (#113978).
         assert kill.call_args.kwargs["scope_home"] == str(own_home)
@@ -387,7 +385,7 @@ class TestWindowsWmicEncoding:
             assert _find_stale_dashboard_pids() == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill + systemd restart")
+@pytest.mark.platforms("posix")  # POSIX kill + systemd restart
 class TestSupervisedBackendRestart:
     """After the kill, systemd-supervised PIDs get their owning unit
     restarted (#68934) — SIGTERM reads as a clean stop to systemd, so
@@ -456,7 +454,7 @@ class TestManualBackendRespawn:
         return main_dashboard
 
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    @pytest.mark.platforms("posix")  # POSIX cmdline capture + respawn
     def test_argv_capture_failure_falls_back_to_hint(self, capsys):
         live = self._live()
 
@@ -478,7 +476,7 @@ class TestManualBackendRespawn:
         out = capsys.readouterr().out
         assert "Restart anything not auto-restarted" in out
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    @pytest.mark.platforms("posix")  # POSIX cmdline capture + respawn
     def test_non_orphan_fixed_port_still_respawns(self, capsys):
         """A supervised-by-shell dashboard with a fixed port is still restarted."""
         live = self._live()
@@ -502,7 +500,7 @@ class TestManualBackendRespawn:
         respawn.assert_called_once_with([argv])
         assert "when you're ready" not in capsys.readouterr().out
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    @pytest.mark.platforms("posix")  # POSIX cmdline capture + respawn
     def test_port_zero_serves_killed_without_respawn(self, capsys):
         """``serve --port 0`` backends are stopped but not resurrected (#78821)."""
         live = self._live()
@@ -533,7 +531,7 @@ class TestManualBackendRespawn:
         assert result["unrecovered"] == []
         assert "when you're ready" not in capsys.readouterr().out
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    @pytest.mark.platforms("posix")  # POSIX cmdline capture + respawn
     def test_detached_fixed_port_still_respawns_after_prior_update(self, capsys):
         """PPID-1 fixed-port backends (prior start_new_session respawn) stay eligible."""
         live = self._live()
@@ -811,7 +809,7 @@ class TestCmdlineCapture:
     def _live(self):
         return main_dashboard
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /proc cmdline path")
+    @pytest.mark.platforms("posix")  # POSIX /proc cmdline path
     def test_reads_proc_cmdline_when_available(self, tmp_path, monkeypatch):
         live = self._live()
         proc_file = tmp_path / "cmdline"
@@ -837,7 +835,7 @@ class TestCmdlineCapture:
 
         assert argv == ["/usr/bin/python3", "-m", "hermes_cli.main", "serve"]
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ps cmdline fallback")
+    @pytest.mark.platforms("posix")  # POSIX ps cmdline fallback
     def test_falls_back_to_ps_without_proc(self, monkeypatch):
         live = self._live()
 
@@ -851,9 +849,9 @@ class TestCmdlineCapture:
 
         assert argv == ["hermes", "serve", "--port", "8300"]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_returns_none_on_windows(self):
-        """``windows_only``: the contract is "no graceful-argv capture on a
+        """``platforms("windows")``: the contract is "no graceful-argv capture on a
         real Windows host" — asserting it against a faked platform only
         restated the branch condition.
         """
@@ -869,9 +867,9 @@ class TestPostUpdateDashboardCleanupIsolation:
         tail (matrix, reconciliation, inner receipt finalize): contained, visible, recorded as
         a failed step on the open receipt."""
         import hermes_cli.update_receipt as ur
-        from hermes_cli import update_cmd
+        from hermes_cli import update_cmd_maint
 
-        ur._current = None
+        ur._current.set(None)
         try:
             ur.begin_update_receipt()
             with patch(
@@ -880,11 +878,11 @@ class TestPostUpdateDashboardCleanupIsolation:
                     "module 'hermes_cli.main_dashboard' has no attribute '_loaded_launchd_backend_jobs'"
                 ),
             ):
-                update_cmd._finish_dashboard_update_cleanup([])  # must not raise
+                update_cmd_maint._refresh_dashboard_after_update()  # must not raise
 
-            steps = {s["name"]: s for s in ur._current.data["steps"]}
+            steps = {s["name"]: s for s in ur._current.get().data["steps"]}
         finally:
-            ur._current = None
+            ur._current.set(None)
 
         assert steps["dashboard_cleanup"]["ok"] is False
         assert "_loaded_launchd_backend_jobs" in steps["dashboard_cleanup"]["detail"]
@@ -923,7 +921,7 @@ class TestLaunchdSupervisedBackends:
             result = _kill_stale_dashboard_processes(restart_managed=restart_managed)
         return result, restart, respawn
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    @pytest.mark.platforms("posix")  # POSIX cmdline capture + respawn
     def test_launchd_owned_backend_restarts_through_launchd_never_as_a_detached_respawn(self, capsys):
         """The reporter's state: the job is loaded but has no live process (it keeps failing on the
         port) and a detached copy runs its exact ProgramArguments. The copy is stopped and the JOB

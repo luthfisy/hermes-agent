@@ -145,16 +145,19 @@ def test_missing_dashboard_deps_point_at_hermes_update():
     from hermes_cli.main_dep_hints import missing_optional_deps_message
 
     text = missing_optional_deps_message("dashboard", "its web-server packages", "all")
-    assert "hermes update" in text
-    assert "-m pip install -e '.[all]'" in text
+    assert "hermes pm install" in text
+    assert "hermes pm repair" in text
+    assert "pip install" not in text
     assert "metadata" not in text
 
 
-def test_missing_node_message_names_cli_fallback(monkeypatch, capsys):
+def test_missing_node_message_names_cli_fallback(monkeypatch, capsys, tmp_path):
     from hermes_cli import main_tui_launch as _tui
 
-    monkeypatch.setattr("hermes_constants.find_node_executable", lambda _b: None)
-    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", lambda _n: False, raising=False)
+    from types import SimpleNamespace
+
+    # PM resolves the runtime; an environment without node on its PATH is the miss.
+    monkeypatch.setattr("pm.ensure", lambda name, **kw: SimpleNamespace(env={"PATH": str(tmp_path)}))
     monkeypatch.delenv("HERMES_NODE", raising=False)
     with pytest.raises(SystemExit):
         _tui._tui_node_bin("node")

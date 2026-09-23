@@ -231,6 +231,11 @@ def _home_layer() -> _HomeLayer:
     if home is not None and (stamps := _plugin_dir_stamps(home)) != layer.stamps:
         _scan_home_layer(layer, key)
         layer.stamps = stamps
+        # Publish the completed layer only after its stamp is current. Auth sync
+        # calls list_providers(), which re-enters this function; syncing from
+        # _scan_home_layer before this assignment recursively rescanned forever.
+        if _discovered and not _discovering:
+            _sync_auth_registry()
     return layer
 
 
@@ -276,7 +281,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
 
     Only that kind is imported from the flat install directory — every other
     plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with PyYAML when available, falling back to a line
+    consent flow. Parsed with ruamel.yaml when available, falling back to a line
     scan so provider discovery never hard-depends on it.
     """
     for filename in ("plugin.yaml", "plugin.yml"):
@@ -288,7 +293,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
         except Exception:
             return False
         try:
-            import yaml
+            import hermes_yaml as yaml
 
             data = yaml.safe_load(text)
             if isinstance(data, dict):
@@ -333,8 +338,6 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
-    if _discovered and not _discovering:
-        _sync_auth_registry()
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:

@@ -121,7 +121,7 @@ def _no_fts_rebuild_throttle(monkeypatch):
 
 
 class TestConnectionLifecycle:
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_writable_state_db_is_owner_only_under_permissive_umask(self, tmp_path):
         """state.db and any live SQLite sidecars must not inherit 0644 modes."""
         db_path = tmp_path / "state.db"
@@ -150,7 +150,7 @@ class TestConnectionLifecycle:
         finally:
             session_db.close()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.platforms("posix")  # POSIX permission bits
     def test_writable_state_db_tightens_existing_loose_mode(self, tmp_path):
         """Opening a legacy 0644 profile store repairs it in place."""
         db_path = tmp_path / "state.db"
@@ -164,7 +164,7 @@ class TestConnectionLifecycle:
         finally:
             session_db.close()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX fcntl locks")
+    @pytest.mark.platforms("posix")  # POSIX fcntl locks
     def test_writable_state_db_keeps_locks_across_second_open(self, tmp_path):
         """Opening a second SessionDB in this process must not unlink live sidecars.
 
@@ -1037,6 +1037,12 @@ class TestFTS5Search:
         assert all("context" in row and row["context"] for row in default)
 
     def test_search_projection_skips_context_enrichment_queries(self, db, monkeypatch):
+        # Force the single-connection (non-WAL) read path so the trace callback
+        # on db._conn observes every statement. Under WAL the read pool hands a
+        # *different* pooled connection to each _read_ctx() checkout, so the
+        # enrichment query would run on a connection this test never traces —
+        # the assertion only holds when reads fall back to the writer conn.
+        monkeypatch.setattr(db, "_wal_active", False)
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="before")
         db.append_message("s1", role="assistant", content="projectionneedle")
