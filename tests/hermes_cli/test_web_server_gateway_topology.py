@@ -57,7 +57,7 @@ def _patch_topology(monkeypatch, homes, running, runtimes):
     import hermes_cli.profiles as profiles_mod
     import gateway.status as status_mod
 
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex: homes)
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex, **kw: homes)
     monkeypatch.setattr(
         profiles_mod, "_check_gateway_running",
         lambda home: next(n for n, h in homes if h == home) in running,

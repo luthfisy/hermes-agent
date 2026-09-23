@@ -944,19 +944,37 @@ def list_profiles(*, lazy_skill_count: bool = False) -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+def parked_marker_path(home: Path) -> Path:
+    return Path(home) / "gateway.parked"
+
+
+def profile_is_parked(home: Path) -> bool:
+    """Marker contents are deliberately irrelevant, including for provisioning."""
+    return parked_marker_path(home).exists()
+
+
+_parked_default_warned: set[Path] = set()
+
+
+def profiles_to_serve(multiplex: bool, *, include_parked: bool = False) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
     ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
-    profiles skipped). Pure directory read: never creates a profile dir (#94590)."""
+    and parked profiles skipped). ``include_parked`` is for installed-profile rosters,
+    not serving/ticking. Pure directory read: never creates a profile dir (#94590)."""
     active = get_active_profile_name() or "default"
+    default = _get_default_hermes_home()
+    if profile_is_parked(default) and default not in _parked_default_warned:
+        logger.warning("Ignoring gateway.parked for the default profile; stop the host gateway instead")
+        _parked_default_warned.add(default)
     if not multiplex:
         return [(active, get_profile_dir(active))]
-    serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs())
+    serve: List[Tuple[str, Path]] = [("default", default)]
+    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
+                 if include_parked or not profile_is_parked(entry))
     return serve
 
 
