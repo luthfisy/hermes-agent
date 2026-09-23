@@ -336,7 +336,7 @@ MEMORY_SCHEMA = {
                 },
             },
         },
-        "required": ["target"],
+        "required": ["target", "action"],
     },
 }
 
