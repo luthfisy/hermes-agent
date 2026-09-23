@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto'
 import { basename, join, resolve } from 'node:path'
 
 const source = process.argv[2]
-const destination = process.argv[3] ?? resolve('/tmp/lunar-city-asset-benchmarks', basename(source ?? 'missing-pack'))
+const destination = process.argv[3] ?? resolve('/tmp/lunar-city-asset-benchmarks', basename(source ?? 'missing-pack')) // no-tmp: ok — CLI default for dev use
 
 if (!source) {
   console.error('usage: node import-open-asset-pack.mjs <source-pack> [quarantine-destination]')

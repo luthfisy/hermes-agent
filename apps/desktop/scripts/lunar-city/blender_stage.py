@@ -366,7 +366,7 @@ def add_skybox(target: bpy.types.Collection) -> tuple[bpy.types.Object, int]:
 def load_scene_contract(path: Path) -> dict:
     """Load the versioned Blender authoring contract beside the world manifest."""
     try:
-        contract = json.loads(path.read_text())
+        contract = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError(f"unable to read Lunar City scene contract {path}: {error}") from error
     if contract.get("version") != 1 or contract.get("activeClip") != "sky-scene":
@@ -738,7 +738,7 @@ def _safe_candidate_artifact(root: Path, raw_path: object) -> Path | None:
 def load_generated_candidate_manifest(path: Path, candidate_root: Path, known_targets: set[str]) -> dict:
     """Validate and hash-lock quarantined image-to-3D outputs before import."""
     try:
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         return {"valid": False, "errors": [f"unable to read generated candidate manifest: {error}"]}
 
@@ -949,7 +949,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optionally render the staged scene to a PNG (or Blender-supported image path)",
     )
-    parser.add_argument("--output", type=Path, default=Path("/tmp/lunar-city-stage.blend"))
+    parser.add_argument("--output", type=Path, default=Path("/tmp/lunar-city-stage.blend"))  # no-tmp: ok — CLI default for Blender batch dev use
     parser.add_argument("--no-reset", action="store_true", help="Keep the current Blender file when running from the Python console")
     # Blender keeps its own flags in sys.argv. Only consume arguments after
     # the conventional ``--`` separator; this also makes console execution

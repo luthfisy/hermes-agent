@@ -5,7 +5,7 @@ import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
-const [sourceArg, destinationArg = "/tmp/lunar-city-open-asset-curated", additionalRootArg] = process.argv.slice(2);
+const [sourceArg, destinationArg = "/tmp/lunar-city-open-asset-curated", additionalRootArg] = process.argv.slice(2); // no-tmp: ok — CLI default for dev use
 if (!sourceArg) {
   console.error("Usage: node curate-open-asset-pack.mjs <download-root> [destination] [additional-root]");
   process.exit(2);

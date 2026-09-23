@@ -220,7 +220,11 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
 # Files that carried literal /tmp paths when this check landed, with their hit counts.
 # Burn-down list: fix or mark, then delete the entry. Regenerate with --print-baseline.
 _BASELINE: dict[str, int] = {
-    # a tree listing inside a fenced code block; an inline marker would render on the page
+    # /tmp paths inside fenced code blocks in docs; inline markers would render on the page
+    "docs/lunar-city-generation-pipeline.md": 4,
+    "docs/lunar-city-handoff-2026-09-01.md": 6,
+    "docs/lunar-city-open-asset-catalog.md": 4,
+    "docs/lunar-city-strategy-game-diagnostic.md": 1,
     "website/docs/getting-started/nix-setup.md": 1,
 }
 

@@ -40,7 +40,7 @@ if [[ "$status" -eq 139 ]]; then
   echo >&2
   echo "Lunar City Blender capture could not initialize ${gpu_backend:-the default GPU backend} (SIGSEGV before Python)." >&2
   echo "Run this command with host permissions, or use a newer Blender build:" >&2
-  echo "  $repo_root/apps/desktop/scripts/lunar-city/run-blender-stage.sh --render-engine auto --output /tmp/lunar-city-stage.blend --render-output /tmp/lunar-city-stage.png" >&2
+  echo "  $repo_root/apps/desktop/scripts/lunar-city/run-blender-stage.sh --render-engine auto --output /tmp/lunar-city-stage.blend --render-output /tmp/lunar-city-stage.png" >&2 # no-tmp: ok — example path in usage help
   echo "The authored scene remains unchanged; this is a Blender/macOS GPU startup boundary." >&2
 fi
 exit "$status"

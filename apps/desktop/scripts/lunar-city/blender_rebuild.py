@@ -317,7 +317,7 @@ def parse_args():
     parser.add_argument("--scene-contract", type=Path, required=True)
     parser.add_argument("--asset-kit-dir", type=Path, default=None)
     parser.add_argument("--rfx-texture", type=Path, default=None)
-    parser.add_argument("--output", type=Path, default=Path("/tmp/lunar-city-rebuilt.blend"))
+    parser.add_argument("--output", type=Path, default=Path("/tmp/lunar-city-rebuilt.blend"))  # no-tmp: ok — CLI default for Blender batch dev use
     parser.add_argument("--render-output", type=Path, default=None)
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     return parser.parse_args(argv)
