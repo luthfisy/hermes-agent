@@ -43,12 +43,13 @@ describe('settings helpers', () => {
     expect(fieldCopyForSchemaKey(FIELD_LABELS, 'model_context_length')).toMatch(/main model/i)
   })
 
-  it('does not shadow the backend schema options for memory.provider', () => {
-    // memory.provider options are discovery-driven and served by the backend
-    // config schema (merged per-request); enumOptionsFor must return undefined
-    // so config-field consumes schema.options instead of a stale static list.
+  it('does not shadow backend-owned schema options', () => {
+    // These options are served by the backend; enumOptionsFor must return
+    // undefined so config-field consumes schema.options instead of a stale
+    // renderer-side copy.
     expect(enumOptionsFor('memory.provider', '', {})).toBeUndefined()
     expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
+    expect(enumOptionsFor('stt.local.model', 'base', {})).toBeUndefined()
   })
 
   describe('isExternalMemoryProvider', () => {
