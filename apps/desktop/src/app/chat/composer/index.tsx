@@ -101,6 +101,7 @@ import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
+import { GeminiLiveDialog } from './gemini-live-dialog'
 import { UrlDialog } from './url-dialog'
 import {
   chipTypedUrlOnSpace,
@@ -1553,6 +1554,7 @@ export function ChatBar({
         open={urlOpen}
         value={urlValue}
       />
+      <GeminiLiveDialog />
     </>
   )
 }
