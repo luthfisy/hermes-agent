@@ -1,5 +1,6 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
+import { SessionNotFoundError } from './client'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
@@ -413,12 +414,18 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 // the given `profile`). The backend resolves exact ids and unique prefixes and
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
+// FASE 4 — Em caso de SessionNotFoundError, relança para tratamento pelo chamador
 export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
   const suffix = sessionScopeQuery(profile)
 
   return hermesApi<SessionInfo>({
     ...sessionScoped(profile),
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
+  }).catch(error => {
+    if (error instanceof SessionNotFoundError) {
+      throw error
+    }
+    throw error
   })
 }
 
@@ -520,6 +527,12 @@ export function getLatestSessionMessages(
     }
 
     return page
+  }).catch(error => {
+    // FASE 4 — SessionNotFoundError: retornar transcript vazio em vez de lançar
+    if (error instanceof SessionNotFoundError) {
+      return { messages: [], session_id: id } as SessionMessagesResponse
+    }
+    throw error
   })
 }
 

@@ -11,6 +11,7 @@ export {
   HermesGateway,
   profileScopeKey,
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+  SessionNotFoundError,
   setApiRequestConnection,
   setApiRequestProfile,
   STARTUP_REQUEST_TIMEOUT_MS
