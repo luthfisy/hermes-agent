@@ -129,27 +129,11 @@ mcp_servers:
 
 ## 内置预设
 
-对于知名 MCP 服务器，`hermes mcp add` 接受 `--preset` 标志，自动填写传输层细节，无需手动查找命令和参数。预设只提供默认值——你在同一命令行传入的其他内容（环境变量、头信息、过滤规则）仍然优先生效。
+目前没有可用的内置 MCP 预设。请使用 `--command` / `--args` 显式配置 stdio MCP 服务器，或使用 `--url` 配置 HTTP MCP 服务器。`--preset` 标志仍被接受，但未显式提供 `--command` / `--url` 时，未知预设名称会被拒绝，且不会保存配置。
 
-| 预设 | 配置内容 |
-|---|---|
-| `codex` | Codex CLI 的 MCP 服务器（通过 stdio 运行 `codex mcp-server`）。需要 PATH 中存在 `codex` CLI。 |
+Codex CLI 从 0.154.0 版本起移除了 `codex mcp-server` 入口，因此原有的 `codex` 预设已不可用。`codex app-server` 使用独立的 JSON-RPC 协议，不能直接替代 MCP 服务器。
 
-```bash
-# 一行命令将 Codex CLI 添加为 MCP 服务器
-hermes mcp add codex --preset codex
-```
-
-等价于写入：
-
-```yaml
-mcp_servers:
-  codex:
-    command: "codex"
-    args: ["mcp-server"]
-```
-
-你可以使用任意本地名称（`hermes mcp add my-codex --preset codex` 完全可以）；预设只提供 `command`/`args` 默认值。
+要在 Hermes 中使用 Codex，可以通过终端运行 `codex exec`，或按照 [Codex App-Server Runtime 指南](./codex-app-server-runtime.md)配置 `model.openai_runtime: codex_app_server`。
 
 ## Hermes 注册 MCP 工具的方式
 

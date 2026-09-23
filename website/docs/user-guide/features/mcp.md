@@ -536,27 +536,11 @@ mcp_servers:
 
 ## Built-in presets
 
-For well-known MCP servers, `hermes mcp add` accepts a `--preset` flag that fills in the transport details so you don't have to look up the command and args. The preset only supplies defaults — anything else (env vars, headers, filtering) you pass on the same command line still wins.
+No built-in MCP presets are currently available. Configure an MCP server explicitly with `--command` / `--args` for stdio, or `--url` for HTTP. The `--preset` flag remains accepted, but without an explicit `--command` / `--url` an unknown preset name is rejected without saving configuration.
 
-| Preset | What it wires up |
-|---|---|
-| `codex` | The Codex CLI's MCP server (`codex mcp-server` over stdio). Requires the `codex` CLI on PATH. |
+Codex CLI removed its `codex mcp-server` entry point in version 0.154.0, so the former `codex` preset is no longer available. `codex app-server` uses its own JSON-RPC protocol and is not a drop-in MCP replacement.
 
-```bash
-# Add Codex CLI as an MCP server in one line
-hermes mcp add codex --preset codex
-```
-
-That writes the equivalent of:
-
-```yaml
-mcp_servers:
-  codex:
-    command: "codex"
-    args: ["mcp-server"]
-```
-
-You can pick any local name (`hermes mcp add my-codex --preset codex` is fine); the preset only provides the `command`/`args` defaults.
+To use Codex with Hermes, run `codex exec` from the terminal, or configure `model.openai_runtime: codex_app_server` as described in the [Codex App-Server Runtime guide](./codex-app-server-runtime.md).
 
 ## How Hermes registers MCP tools
 
