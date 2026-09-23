@@ -19,6 +19,7 @@ import re
 import shutil
 import stat as stat_mod
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +58,11 @@ DEFAULT_EXCLUDES = [
     "*.7z", "*.rar", "*.iso",
     ".env", ".env.*", ".env.local", ".env.*.local",  # secrets
     ".DS_Store", "Thumbs.db", "*.log",  # OS junk / logs
+    # Root-owned system scratch that the agent user cannot read (systemd/snap private dirs,
+    # Chromium singleton locks, gdm error files).  When a workdir contains one, `git add -A`
+    # aborts with "fatal: adding files failed" (exit 128) and that turn's snapshot is lost —
+    # for a directory the agent writes to repeatedly, forever.
+    "snap-private-tmp/", "systemd-private-*/", ".org.chromium.Chromium.*/", "gdm3-config-err-*",
 ]
 
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
@@ -106,6 +112,13 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
 
 def _normalize_path(path_value: str) -> Path:
     return Path(path_value).expanduser().resolve()
+
+
+# Temp roots themselves are never snapshot targets: they are throwaway scratch whose payload is
+# browser caches and root-owned residue whose unreadable entries make `git add -A` exit 128.
+# Paths *below* a temp root stay eligible — a pytest tmp_path project must still checkpoint.
+_TEMP_ROOTS: frozenset = frozenset(
+    {str(_normalize_path(p)) for p in (tempfile.gettempdir(), "/var/tmp", "/dev/shm")})
 
 
 def _project_hash(working_dir: str) -> str:
@@ -677,7 +690,7 @@ class CheckpointManager:
         if not self._git_available:
             return False
         abs_dir = str(_normalize_path(working_dir))
-        if abs_dir in {"/", str(Path.home())}:  # never snapshot root/home
+        if abs_dir in {"/", str(Path.home())} or abs_dir in _TEMP_ROOTS:  # never snapshot root/home/temp roots
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
         if abs_dir in self._checkpointed_dirs:
