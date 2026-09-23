@@ -1312,7 +1312,13 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
         if _codex_access_token_is_expiring(access_token, 0):
             access_token = None
     except Exception:
-        access_token = None
+        try:
+            from agent.credential_pool import load_pool
+
+            entry = load_pool("openai-codex").peek()
+            access_token = str(getattr(entry, "runtime_api_key", "") or "").strip() or None
+        except Exception:
+            access_token = None
     return get_codex_model_ids(access_token=access_token)
 
 
