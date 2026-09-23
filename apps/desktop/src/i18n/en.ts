@@ -4845,6 +4845,7 @@ export const en: Translations = {
     restartToSaveImages: 'Restart Hermes Desktop to save images',
     imageDownloadFailed: 'Image download failed',
     openImage: 'Open image',
+    openDiagram: 'Open diagram',
     downloadImage: 'Download image',
     savingImage: 'Saving image',
     imagePreviewFailed: 'Image preview failed',

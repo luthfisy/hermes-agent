@@ -3326,6 +3326,7 @@ export const ar = defineLocale({
     restartToSaveImages: 'أعد التشغيل لحفظ الصور',
     imageDownloadFailed: 'فشل تنزيل الصورة',
     openImage: 'فتح الصورة',
+    openDiagram: 'فتح المخطط',
     downloadImage: 'تنزيل الصورة',
     savingImage: 'جار حفظ الصورة',
     imagePreviewFailed: 'فشلت معاينة الصورة',
