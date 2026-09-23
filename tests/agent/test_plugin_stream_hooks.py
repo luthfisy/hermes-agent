@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -162,6 +163,174 @@ def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
     shutdown_plugin_stream_hook_dispatcher()
 
     assert slow_delivered == ["first", "third"]
+
+
+def test_stream_observers_keep_context_and_dispatcher_scope_per_profile(
+    monkeypatch, tmp_path
+):
+    """Concurrent profile events use each profile's home and callback."""
+    from hermes_cli import plugins
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    manager_a = plugins.PluginManager(scope_key=str(home_a))
+    manager_b = plugins.PluginManager(scope_key=str(home_b))
+    manager_a._discovered = True
+    manager_b._discovered = True
+    delivered = []
+    delivered_lock = threading.Lock()
+    delivered_event = threading.Event()
+
+    def callback_a(**kwargs):
+        with delivered_lock:
+            delivered.append(("a", str(get_hermes_home()), kwargs["event_id"]))
+            if len(delivered) == 2:
+                delivered_event.set()
+
+    def callback_b(**kwargs):
+        with delivered_lock:
+            delivered.append(("b", str(get_hermes_home()), kwargs["event_id"]))
+            if len(delivered) == 2:
+                delivered_event.set()
+
+    plugins.PluginContext(
+        plugins.PluginManifest(name="profile-a-plugin"), manager_a
+    ).register_hook("memory_prefetch", callback_a)
+    plugins.PluginContext(
+        plugins.PluginManifest(name="profile-b-plugin"), manager_b
+    ).register_hook("memory_prefetch", callback_b)
+
+    def manager_for_active_home():
+        return manager_a if get_hermes_home() == home_a else manager_b
+
+    monkeypatch.setattr(plugins, "get_plugin_manager", manager_for_active_home)
+
+    def emit(home, event_id):
+        token = set_hermes_home_override(home)
+        try:
+            return enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
+        finally:
+            reset_hermes_home_override(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert set(pool.map(emit, (home_a, home_b), ("event-a", "event-b"))) == {True}
+
+    assert delivered_event.wait(timeout=1.0)
+    shutdown_plugin_observer_dispatcher()
+    assert sorted(delivered) == sorted(
+        [
+            ("a", str(home_a), "event-a"),
+            ("b", str(home_b), "event-b"),
+        ]
+    )
+
+
+def test_observer_failures_report_in_originating_profile(tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli import plugins
+    from agent.plugin_stream_hooks import enqueue_plugin_observer_hook, shutdown_plugin_observer_dispatcher
+
+    shutdown_plugin_observer_dispatcher()
+    homes = [tmp_path / "a", tmp_path / "b"]
+    managers = {home: plugins.PluginManager(scope_key=str(home)) for home in homes}
+    reports = []
+
+    def failing(**kwargs):
+        raise ValueError(kwargs["event_id"])
+
+    for home, manager in managers.items():
+        manager._discovered = True
+        plugins.PluginContext(plugins.PluginManifest(name="failure-plugin"), manager).register_hook(
+            "memory_prefetch", failing
+        )
+        def report(hook, callback, payload, exc, owner=home):
+            reports.append((owner, get_hermes_home(), payload["event_id"], str(exc)))
+        monkeypatch.setattr(manager, "_report_hook_failure", report)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: managers[get_hermes_home()])
+    try:
+        for index, home in enumerate([homes[0], homes[1], homes[0]]):
+            token = set_hermes_home_override(home)
+            try:
+                assert enqueue_plugin_observer_hook("memory_prefetch", event_id=str(index))
+            finally:
+                reset_hermes_home_override(token)
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+        assert sorted(reports) == sorted(
+            (home, home, str(index), str(index))
+            for index, home in enumerate([homes[0], homes[1], homes[0]])
+        )
+    finally:
+        shutdown_plugin_observer_dispatcher()
+
+
+def test_observer_dispatcher_shutdown_has_bounded_join(monkeypatch):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_consumer(**_kwargs):
+        started.set()
+        release.wait(timeout=1.0)
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"memory_prefetch": [blocked_consumer]}),
+    )
+
+    assert enqueue_plugin_observer_hook("memory_prefetch", turn_id="turn") is True
+    assert started.wait(timeout=1.0)
+    started_at = time.monotonic()
+    shutdown_plugin_observer_dispatcher(timeout=0.01)
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 0.2
+    release.set()
+
+
+def test_observer_dispatcher_shutdown_drains_pending_events(monkeypatch):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    delivered = []
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def consumer(**kwargs):
+        delivered.append(kwargs["event_id"])
+        if kwargs["event_id"] == "first":
+            first_started.set()
+            release_first.wait(timeout=1.0)
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"memory_prefetch": [consumer]}),
+    )
+
+    assert enqueue_plugin_observer_hook("memory_prefetch", event_id="first") is True
+    assert first_started.wait(timeout=1.0)
+    assert enqueue_plugin_observer_hook("memory_prefetch", event_id="second") is True
+    release_first.set()
+    shutdown_plugin_observer_dispatcher(timeout=1.0)
+
+    assert delivered == ["first", "second"]
 
 
 def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
