@@ -5,6 +5,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type * as ConfigApi from '@/api/config'
 
+import { ModelSettings } from './model-settings'
+
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
 // them to let the dropdown open in tests.
@@ -91,8 +93,7 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-async function renderModelSettings(scopeProfile?: string) {
-  const { ModelSettings } = await import('./model-settings')
+function renderModelSettings(scopeProfile?: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(

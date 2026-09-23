@@ -20,6 +20,16 @@ from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 
+_TEST_PROFILE_INCARNATION = "f" * 32
+
+
+def _stamp_test_profile_home(profile_home: Path) -> None:
+    profile_home.joinpath(".profile-incarnation").write_text(
+        _TEST_PROFILE_INCARNATION + "\n",
+        encoding="utf-8",
+    )
+
+
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
     """Run one RPC to completion synchronously, regardless of pool routing.
 
@@ -2731,7 +2741,7 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "first prompt"},
+        {"user_originated": True, "role": "user", "text": "first prompt"},
         {
             "args": {"pattern": "resume"},
             "context": "resume",
@@ -2739,7 +2749,7 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
             "role": "tool",
         },
         {"role": "assistant", "text": "first answer"},
-        {"role": "user", "text": "second prompt"},
+        {"user_originated": True, "role": "user", "text": "second prompt"},
     ]
 
 
@@ -2787,7 +2797,7 @@ def test_history_to_messages_preserves_live_ask_without_compaction_scaffolding()
                 "reasoning": "internal compaction reasoning",
             }
         ]
-    ) == [{"role": "user", "text": "test the browser controller"}]
+    ) == [{"user_originated": True, "role": "user", "text": "test the browser controller"}]
 
 
 def test_history_to_messages_unwraps_merged_assistant_carrier():
@@ -2905,7 +2915,7 @@ def test_history_to_messages_keeps_reasoning_only_assistant_turn():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "think about this"},
+        {"user_originated": True, "role": "user", "text": "think about this"},
         {"role": "assistant", "text": "", "reasoning": "step-by-step thoughts"},
         {"role": "assistant", "text": "here is the answer"},
     ]
@@ -2922,7 +2932,7 @@ def test_history_to_messages_still_drops_empty_assistant_without_reasoning():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "hi"},
+        {"user_originated": True, "role": "user", "text": "hi"},
         {"role": "assistant", "text": "real reply"},
     ]
 
@@ -2944,7 +2954,7 @@ def test_history_to_messages_renders_multimodal_content():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "look here\ndata:image/png;base64,abc"},
+        {"user_originated": True, "role": "user", "text": "look here\ndata:image/png;base64,abc"},
         {"role": "assistant", "text": "saw it"},
     ]
 
@@ -2962,7 +2972,7 @@ def test_history_to_messages_strips_legacy_discord_triggering_note():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "[Replying to: hi]\nwhat is up"},
+        {"role": "user", "text": "[Replying to: hi]\nwhat is up", "user_originated": True},
         {"role": "assistant", "text": f"echo: {note}"},
     ]
 
@@ -2993,9 +3003,9 @@ def test_history_to_messages_hides_gateway_system_markers():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "first question"},
+        {"user_originated": True, "role": "user", "text": "first question"},
         {"role": "assistant", "text": "first answer"},
-        {"role": "user", "text": "second question"},
+        {"user_originated": True, "role": "user", "text": "second question"},
         {"role": "assistant", "text": "second answer"},
     ]
 
@@ -3031,8 +3041,8 @@ def test_history_to_messages_drops_display_hidden_scaffolding():
     projected = server._history_to_messages(history)
 
     assert projected == [
-        {"role": "user", "text": "go"},
-        {"role": "user", "text": "i love you"},
+        {"user_originated": True, "role": "user", "text": "go"},
+        {"user_originated": True, "role": "user", "text": "i love you"},
         {"role": "assistant", "text": "Love you too"},
     ]
     # Server-only sidecar never crosses the wire.
@@ -3061,7 +3071,7 @@ def test_history_to_messages_projects_a_skill_turn_to_its_invocation():
 
     assert server._history_to_messages(history) == [
         {
-            "role": "user",
+            "user_originated": True, "role": "user",
             "text": "/work fix the title leak",
             "display_kind": "skill_invocation",
         },
@@ -3077,7 +3087,7 @@ def test_history_to_messages_projects_a_bare_skill_turn_to_the_command():
     )
 
     assert server._history_to_messages([{"role": "user", "content": scaffolded}]) == [
-        {"role": "user", "text": "/work", "display_kind": "skill_invocation"}
+        {"user_originated": True, "role": "user", "text": "/work", "display_kind": "skill_invocation"}
     ]
 
 
@@ -3217,9 +3227,9 @@ def test_history_to_messages_types_a_legacy_auto_continue_row():
     projected = server._history_to_messages(history)
 
     assert projected == [
-        {"role": "user", "text": "keep going"},
+        {"user_originated": True, "role": "user", "text": "keep going"},
         {
-            "role": "user",
+            "user_originated": True, "role": "user",
             "text": server._auto_continue_note("keep going"),
             "display_kind": "auto_continue",
         },
@@ -3236,7 +3246,7 @@ def test_history_to_messages_keeps_real_user_bracket_text():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "why does [System: ...] show up in my chat?"},
+        {"user_originated": True, "role": "user", "text": "why does [System: ...] show up in my chat?"},
         {"role": "assistant", "text": "it should not"},
     ]
 
@@ -3311,7 +3321,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
     )
 
     expected = [] if omit_messages else [
-        {"role": "user", "text": "root prompt"},
+        {"role": "user", "text": "root prompt", "user_originated": True},
         {"role": "assistant", "text": "root answer"},
     ]
     assert resp["result"]["messages"] == expected
@@ -4026,7 +4036,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
     monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **_kwargs: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(
@@ -4077,6 +4087,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     target = "stored-profile-session"
     profile_home = tmp_path / "profiles" / "worker"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     new_cwd = tmp_path / "new-workspace"
     new_cwd.mkdir()
     captured = {}
@@ -4096,12 +4107,16 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
     import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
 
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **_kwargs: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(terminal_tool_lifecycle, "cleanup_vm", lambda _key: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
 
-    session = {"session_key": target, "profile_home": str(profile_home)}
+    session = {
+        "session_key": target,
+        "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
+    }
     assert server._set_session_cwd(session, str(new_cwd)) == str(new_cwd)
     assert session["cwd"] == str(new_cwd)
     assert session["explicit_cwd"] is True
@@ -8194,10 +8209,11 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
     row happened to be read (the cross-profile session-jump bug)."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     created = []
 
     class _ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             created.append({"db_path": db_path})
 
         def create_session(self, key, **kwargs):
@@ -8210,7 +8226,11 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row(
-        {"session_key": "k1", "profile_home": str(profile_home)}
+        {
+            "session_key": "k1",
+            "profile_home": str(profile_home),
+            "profile_incarnation": _TEST_PROFILE_INCARNATION,
+        }
     )
 
     assert created and created[0]["key"] == "k1"
@@ -11062,7 +11082,7 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
         "turn_isolation": True,
         "host_ack": {key: value for key, value in ack.items() if key != "messages"},
         "info": {"usage": {"total": 42}},
-        "messages": [{"role": "user", "text": "compressed context"}],
+        "messages": [{"role": "user", "text": "compressed context", "user_originated": True}],
         "usage": {"total": 42},
     }
 
@@ -15587,7 +15607,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
             return [{"id": "launch-1", "source": "tui", "title": "L"}]
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def list_sessions_rich(self, **kwargs):
@@ -15638,7 +15658,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
             return [{"id": "launch-tip", "source": "tui", "title": "L", "started_at": 9}]
 
     class ProfileDB2:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             self.db_path = db_path
 
         def list_sessions_rich(self, **kwargs):
@@ -15769,7 +15789,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
     captured: dict = {}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             captured["db_path"] = db_path
 
         def delete_session(self, sid, sessions_dir=None):
@@ -15802,6 +15822,7 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
     """session.title on a non-launch profile session must not touch launch DB."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -15817,7 +15838,7 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
             return {"id": _key, "title": "from-launch"}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             self.db_path = db_path
             seen["db_path"] = db_path
 
@@ -15844,6 +15865,7 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
         "running": False,
         "pending_title": None,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "agent": None,
         "created_at": 1.0,
         "last_active": 1.0,
@@ -15877,6 +15899,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
     """session.history must read durable messages from the profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -15885,7 +15908,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
             return [{"role": "user", "content": "launch"}]
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def get_messages_as_conversation(self, _key, include_ancestors=True, **_kwargs):
@@ -15901,6 +15924,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
         "history_lock": __import__("threading").Lock(),
         "running": False,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "agent": None,
         "created_at": 1.0,
         "last_active": 1.0,
@@ -15964,6 +15988,7 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
     """session.status must load meta from the session profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -15972,7 +15997,7 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
             return {"id": _key, "title": "launch-title", "started_at": 1}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def get_session(self, _key):
@@ -15988,6 +16013,7 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
         "history_lock": __import__("threading").Lock(),
         "running": False,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "agent": None,
         "created_at": 1.0,
         "last_active": 1.0,
@@ -16010,6 +16036,7 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
     """_teardown_session must end_session on the profile store, not launch."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -16021,7 +16048,7 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
             seen["launch_end"] = True
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def get_session(self, _key):
@@ -16039,6 +16066,7 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
     session = {
         "session_key": "ml-sess",
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "agent": None,
         "history": [],
         "source": "tui",
@@ -16054,6 +16082,8 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     """session.branch must copy history into the parent's profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
+    (profile_home / "profile.yaml").write_text("name: mlperf\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen: dict = {"msgs": []}
 
@@ -16072,7 +16102,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             return True
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
             seen.setdefault("inits", 0)
             seen["inits"] += 1
@@ -16121,6 +16151,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         "running": False,
         "cols": 80,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "source": "tui",
         "agent": FakeAgent(),
         "created_at": 1.0,
@@ -16497,6 +16528,8 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
 
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
+    (profile_home / "profile.yaml").write_text("name: mlperf\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (profile_home / ".env").write_text(
         "PROXMOX_TOKEN=mlperf-secret\n", encoding="utf-8"
@@ -16504,7 +16537,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     seen: dict = {"msgs": []}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             pass
 
         def get_session_title(self, _key):
@@ -16548,6 +16581,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
         "running": False,
         "cols": 80,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "source": "tui",
         "agent": FakeAgent(),
         "created_at": 1.0,
@@ -16590,6 +16624,8 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
     """A live branch must copy the complete visible transcript, not the compacted model tail."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
+    (profile_home / "profile.yaml").write_text("name: mlperf\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen: dict = {"msgs": []}
 
@@ -16607,7 +16643,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
             return "launch"
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen.setdefault("inits", 0)
             seen["inits"] += 1
 
@@ -16670,6 +16706,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         "running": False,
         "cols": 80,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "source": "tui",
         "agent": FakeAgent(),
         "created_at": 1.0,
@@ -16720,6 +16757,7 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
     """Post-turn pending_title must land in the session profile store."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -16728,7 +16766,7 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
             return True
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def set_session_title(self, key, title):
@@ -16744,6 +16782,7 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
         "session_key": "ml-sess",
         "pending_title": "deferred-title",
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "history": [],
     }
     # Exercise the same close pattern as the post-turn finalizer.
@@ -16929,6 +16968,10 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory._anthropic_oauth_credentials_present",
+        lambda: False,
     )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)
@@ -17403,6 +17446,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             "assistant": "partial answer",
             "streaming": True,
             "user": "write a long answer",
+            "user_originated": True,
         }
         turn_started_at = resp["result"]["turn_started_at"]
         assert turn_started_at == server._sessions["sid-live"]["inflight_turn"]["started_at"]
@@ -17421,7 +17465,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         assert completed["result"].get("inflight") is None
         assert completed["result"]["turn_started_at"] is None
         assert completed["result"]["messages"] == [
-            {"role": "user", "text": "write a long answer"},
+            {"role": "user", "text": "write a long answer", "user_originated": True},
             {"role": "assistant", "text": "partial answer complete"},
         ]
     finally:
@@ -17499,7 +17543,7 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
         assert resp["result"]["status"] == "working"
         assert resp["result"]["info"] == {"model": "model-b"}
         assert resp["result"]["messages"] == [
-            {"role": "user", "text": "new prompt"},
+            {"role": "user", "text": "new prompt", "user_originated": True},
             {"role": "assistant", "text": "new answer"},
         ]
     finally:
@@ -19246,14 +19290,14 @@ def test_decode_attach_base64_helper():
     import base64 as _b64
 
     raw = _b64.b64encode(b"hello").decode("ascii")
-    assert server._decode_attach_base64(raw, mime_prefix="image/") == b"hello"
+    assert server._decode_attach_base64(raw, mime_prefix="image/", max_bytes=5) == b"hello"
     assert (
-        server._decode_attach_base64(f"data:image/png;base64,{raw}", mime_prefix="image/")
+        server._decode_attach_base64(f"data:image/png;base64,{raw}", mime_prefix="image/", max_bytes=5)
         == b"hello"
     )
     # whitespace inside payload is tolerated
-    assert server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/") == b"hello"
-    assert server._decode_attach_base64("@@@", mime_prefix="image/") is None
+    assert server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/", max_bytes=5) == b"hello"
+    assert server._decode_attach_base64("@@@", mime_prefix="image/", max_bytes=5) is None
 
 
 def test_sniff_image_ext_magic_and_filename():
@@ -20061,6 +20105,7 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *_args: None)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
 
+    monkeypatch.setitem(server._sessions, "sid", session)
     server._reset_session_agent("sid", session)
 
     # No session overrides forwarded — fresh agent builds from config.
@@ -21348,7 +21393,9 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
     profile_home = tmp_path / "profiles" / "worker"
     profile_home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     session["profile_home"] = str(profile_home)
+    session["profile_incarnation"] = server._capture_profile_incarnation(profile_home)
     session["history"] = [
         {"role": "tool", "tool_call_id": "old", "content": "x" * 20_000}
     ]

@@ -133,7 +133,8 @@ async def get_host_identity(request: Request):
     # ``role`` is the host ROLE this process owns (gateway/host_rendezvous.ROLE_SERVE), not the
     # launch mode: `hermes serve` and `hermes dashboard` are one host role that differ in SPA.
     return {"ok": True, "protocolVersion": 1, "pid": os.getpid(), "role": "serve",
-            "servesSpa": bool(getattr(app.state, "serves_spa", False))}
+            "servesSpa": bool(getattr(app.state, "serves_spa", False)),
+            "ui_surface": getattr(app.state, "ui_surface", "dashboard")}
 
 
 @router.get("/api/health/idle")
@@ -492,6 +493,7 @@ async def get_status(profile: Optional[str] = None):
 
         status = {
             "version": __version__, "release_date": __release_date__,
+            "ui_surface": getattr(app.state, "ui_surface", "dashboard"),
             "config_version": current_ver, "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,

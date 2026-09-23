@@ -135,7 +135,9 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
         _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
-        atomic_config_write(config_path, user_config)
+        # The file existed when this transaction started. Never recreate its
+        # lifecycle-owned named-profile parent if DELETE wins before commit.
+        atomic_config_write(config_path, user_config, create_parent=False)
     return touched
 
 

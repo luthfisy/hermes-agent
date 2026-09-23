@@ -33,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__
+from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import load_config
 
 try:
@@ -201,9 +202,7 @@ async def _lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
+    # Gateway lifecycle ownership remains exclusive to Electron-spawned backends.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
@@ -219,6 +218,10 @@ async def _lifespan(app: "FastAPI"):
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 
+    # Standalone Webapp, like Desktop, has no gateway to run its scheduled jobs.
+    # Reuse the profile-aware ticker without adopting Electron's gateway cleanup.
+    # Plain dashboard deployments still rely on their existing gateway.
+    if os.getenv("HERMES_DESKTOP") == "1" or getattr(app.state, "ui_surface", None) == "webapp":
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,
@@ -229,7 +232,11 @@ async def _lifespan(app: "FastAPI"):
         cron_thread.start()
 
     # Reap idle/dead keep-alive PTY sessions (30-min TTL).
+    PTY_REGISTRY._closed = False
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
+    from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
+    host_terminals = host_terminal_lifespan(app)
+    await host_terminals.__aenter__()
     # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
     # Live auto-archive timer, independent of list requests.
@@ -270,6 +277,7 @@ async def _lifespan(app: "FastAPI"):
         selftest_task.cancel()
         auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
+        await host_terminals.__aexit__(None, None, None)
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
@@ -385,6 +393,12 @@ _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
 
+from hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware
+
+# Innermost user middleware: auth/Host checks run before body ingestion, and
+# the receive limit runs before FastAPI can spool a multipart attachment.
+app.add_middleware(ChatFileUploadLimitMiddleware)
+
 # CORS: localhost origins only — allow_origins=["*"] on 0.0.0.0 would let any
 # website read/modify config and secrets.
 app.add_middleware(
@@ -414,9 +428,10 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), f"Bearer {_SESSION_TOKEN}".encode())
 
 
-# Routes that may also authenticate via ``?token=`` (download links opened by
-# the OS shell / a new tab, where no header can be set). Kept narrow.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
+# Routes that may also authenticate via ``?token=`` (browser downloads and
+# audio/video elements cannot set headers). The OAuth gate still requires its
+# session cookie; query tokens are only accepted by the loopback token gate.
+_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download", "/api/files/stream"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
@@ -819,7 +834,7 @@ elif _GATEWAY_HEALTH_TIMEOUT > _GATEWAY_HEALTH_TIMEOUT_MAX:
 
 
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
-_FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
+_FS_DATA_URL_MAX_BYTES = WEBAPP_ATTACHMENT_MAX_BYTES
 # Multipart uploads stream to a temp file in fixed chunks and rename into
 # place: constant memory, no base64 inflation, no proxy body-size 502s (NS-501).
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -958,9 +973,13 @@ from hermes_cli.web_routers import (  # noqa: E402
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
     dashboard_ui as _dashboard_ui_routes,
+    webapp as _webapp_routes,
 )
 
+import hermes_cli.web_routers.uploads as _upload_routes
+
 app.include_router(_files_routes.router)
+app.include_router(_upload_routes.router)
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
@@ -988,6 +1007,7 @@ app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_dashboard_ui_routes.router)
+app.include_router(_webapp_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -1269,7 +1289,7 @@ def _on_server_started(
         from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
 
         register_self(
-            "serve" if headless else "dashboard",
+            "serve" if headless else "webapp" if getattr(app.state, "ui_surface", "dashboard") == "webapp" else "dashboard",
             detail={"host": host, "port": actual_port, "profile": initial_profile or ""},
         )
         attach_self_to_kill_on_close_job()
@@ -1421,6 +1441,7 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ui_surface: str = "dashboard",
 ):
     """Start the web UI server.
 
@@ -1435,6 +1456,9 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    if ui_surface not in {"dashboard", "webapp", "serve"}:
+        raise ValueError(f"unsupported web UI surface: {ui_surface}")
+    app.state.ui_surface = "serve" if headless else ui_surface
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
@@ -1452,6 +1476,11 @@ def start_server(
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
     _configure_auth_gate(host, allow_public, ssh_session_token, ssh_owner_nonce)
+    if app.state.ui_surface == "webapp" and not app.state.auth_required:
+        # Webapp launch credentials are process-local, never inherited from
+        # Desktop environment/argv. Every start invalidates old launch links.
+        global _SESSION_TOKEN
+        _SESSION_TOKEN = secrets.token_urlsafe(32)
 
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).

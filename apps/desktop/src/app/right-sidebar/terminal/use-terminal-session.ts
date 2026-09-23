@@ -3,6 +3,7 @@ import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
+import type { IMarker } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
@@ -28,7 +29,7 @@ import {
 } from './selection'
 import { registerTerminalContextMenu } from './terminal-context-menu'
 import { prepareTerminalFontFamily } from './terminal-font'
-import { closeTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
+import { $terminals, markTerminalPersistent, removeExitedTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
 import { useTerminalFontController } from './use-terminal-font'
 
 // How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
@@ -61,9 +62,10 @@ if (typeof window !== 'undefined') {
 
   window.addEventListener('pagehide', markTearingDown)
   window.addEventListener('beforeunload', markTearingDown)
+  window.addEventListener('pageshow', () => { appTearingDown = false })
 }
 
-type TerminalStatus = 'closed' | 'open' | 'starting'
+type TerminalStatus = 'closed' | 'open' | 'starting' | 'reconnecting'
 
 // ⌘/Ctrl+L is a global shortcut, so a text selection in the file preview pane
 // lands in this handler with no xterm selection. Label those with the previewed
@@ -185,6 +187,22 @@ function stripInitialPromptGap(data: string) {
 // spacer / prompt-gap / zsh `%` marker row.
 const visibleText = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
 
+const FISH_WELCOME = 'Welcometofish,thefriendlyinteractiveshell'
+const FISH_HELP = 'Typehelpforinstructionsonhowtousefish'
+
+const isFishShell = (shell: string) => shell.split(/[\\/]/).pop()?.toLowerCase() === 'fish'
+
+// This function receives only PTY output produced after the restore boundary,
+// so the leading greeting belongs to the fresh Fish process. Historical command
+// output is held separately and never enters this classifier.
+function stripLiveFishGreeting(lines: string[]): string[] {
+  if (visibleText(lines[0] ?? '') !== FISH_WELCOME || visibleText(lines[1] ?? '') !== FISH_HELP) {
+    return lines
+  }
+
+  return lines.slice(2)
+}
+
 // Trim the shell's trailing idle prompt from a serialized snapshot before it's
 // persisted. Without it, the saved buffer ends in the old prompt, so the next
 // launch replays it directly above the fresh shell's prompt ("double bar").
@@ -198,8 +216,11 @@ const visibleText = (line: string) => stripEscapeSequences(line).replace(/[\s%]/
 //     separator, so the final line itself is the prompt and is dropped.
 // The fresh shell reprints the current prompt on boot either way, so only the
 // redundant idle prompt is removed — command output is preserved.
-export function cleanReviveSnapshot(serialized: string): string {
-  const lines = serialized.split(/\r?\n/)
+export function cleanReviveSnapshot(serialized: string, shell = '', startsAtLiveBoundary = true): string {
+  const fish = isFishShell(shell)
+
+  const lines =
+    fish && startsAtLiveBoundary ? stripLiveFishGreeting(serialized.split(/\r?\n/)) : serialized.split(/\r?\n/)
 
   while (lines.length && !visibleText(lines[lines.length - 1])) {
     lines.pop()
@@ -207,6 +228,13 @@ export function cleanReviveSnapshot(serialized: string): string {
 
   if (lines.length === 0) {
     return ''
+  }
+
+  if (fish) {
+    // The live boundary proves which greeting belongs to this new Fish process,
+    // but plain terminal rows cannot prove whether a prompt-looking tail is a
+    // prompt or command output. Preserve the tail rather than guessing away data.
+    return lines.join('\r\n')
   }
 
   const lastBlank = lines.findLastIndex(line => !visibleText(line))
@@ -219,15 +247,45 @@ export function cleanReviveSnapshot(serialized: string): string {
   return lines.join('\r\n')
 }
 
-// True when a revive buffer holds no real scrollback: empty, or only repeats of
-// one line (the idle prompt). This is the idle-accumulation signature (#61572) —
-// each relaunch replayed the saved prompt(s) and the fresh shell printed one more
-// below, growing the tab by a line per cycle. Real sessions vary (prompt +
-// command + output), so genuine short histories are never mistaken for idle.
-export function isIdlePromptOnly(serialized: string): boolean {
-  const lines = serialized.split(/\r?\n/).map(visibleText).filter(Boolean)
+// Keep restored history byte-for-byte and append only the cleaned output emitted
+// by the new PTY. This provenance boundary is what makes greeting/prompt cleanup
+// safe: legacy scrollback is never reclassified by its visible text.
+export function mergeReviveSnapshot(
+  restored: string,
+  live: string,
+  shell = '',
+  startsAtLiveBoundary = true
+): string {
+  const cleanedLive = cleanReviveSnapshot(live, shell, startsAtLiveBoundary)
 
-  return lines.length === 0 || lines.every(line => line === lines[0])
+  if (!restored) {
+    return cleanedLive
+  }
+
+  if (!cleanedLive) {
+    return restored
+  }
+
+  return `${restored}\r\n${cleanedLive}`
+}
+
+export function resolveLiveSnapshotWindow(
+  markerLine: number,
+  end: number,
+  cursorLine: number,
+  maxRows = PERSISTENT_SESSION_SCROLLBACK,
+  markerRegistered = true
+): { keepRestored: boolean; start: number } | null {
+  // xterm reset paths can leave the marker object numerically valid after it was
+  // removed from `term.markers`, or restart the cursor above it. Only a currently
+  // registered marker at/before the cursor can still delimit live output.
+  if (!markerRegistered || markerLine < 0 || markerLine > end || markerLine > cursorLine) {
+    return null
+  }
+
+  const start = Math.max(markerLine, end - maxRows + 1)
+
+  return { keepRestored: start === markerLine, start }
 }
 
 interface UseTerminalSessionOptions {
@@ -502,6 +560,10 @@ export function useTerminalSession({
     }
 
     let disposed = false
+    let persistent = Boolean($terminals.get().find(term => term.id === id)?.persistent)
+    let resumeOnly = persistent
+    let replayWrites = 0
+    let retrySession: (() => void) | null = null
     const cleanup: Array<() => void> = []
     let lastSentSize: { cols: number; rows: number } | null = null
 
@@ -558,14 +620,41 @@ export function useTerminalSession({
 
     // Replay last session's scrollback before the fresh shell boots. The process
     // is NOT revived — a new shell starts one line below the restored history.
-    // Stripping the boot gap still applies to the live shell output that follows,
-    // so the fresh prompt lands flush under the restored block.
-    const initialReviveBuffer = initialReviveBufferRef.current
+    // A marker at that boundary lets persistence append only new PTY output;
+    // prior history is never reparsed or rewritten based on text heuristics.
+    const initialReviveBuffer = initialReviveBufferRef.current ?? ''
+    let liveStartMarker: IMarker | undefined
+    let markHistoryReady: () => void = () => undefined
 
-    if (initialReviveBuffer) {
-      term.write(initialReviveBuffer)
-      term.write('\r\n')
+    const historyReady = new Promise<void>(resolve => {
+      markHistoryReady = resolve
+    })
+
+    const markLiveStart = () => {
+      liveStartMarker = term.registerMarker(0)
+      markHistoryReady()
     }
+
+    // Browser capability is negotiated by start metadata. Delay local history
+    // until then, otherwise the server replay would duplicate it.
+    let historyRestored = false
+
+    const restoreHistory = () => {
+      if (historyRestored) {return}
+      historyRestored = true
+
+      if (initialReviveBuffer && !persistent) {
+        ++replayWrites
+        term.write(initialReviveBuffer)
+        term.write('\r\n', () => { --replayWrites; markLiveStart() })
+      } else {
+        markLiveStart()
+      }
+    }
+
+    if (!terminalApi.detach) {restoreHistory()}
+
+    cleanup.push(() => liveStartMarker?.dispose())
 
     // Track the shell's working directory so a reopened tab restarts where the
     // user last `cd`'d. Two independent signals feed it: cwd-reporting OSC
@@ -618,31 +707,71 @@ export function useTerminalSession({
     let lastSnapshotAt = 0
 
     const persistSnapshot = () => {
-      if (disposed) {
+      if (disposed || persistent) {
         return
       }
 
       lastSnapshotAt = Date.now()
 
       // No user input this session: never re-serialize. The live buffer now holds
-      // the replayed history plus a fresh boot prompt, and re-saving that is
-      // exactly what grew idle tabs by one prompt line per relaunch (#61572).
-      // If the buffer we loaded carried no real scrollback (empty, or only a
-      // repeated prompt), clear it so the next launch shows a single fresh prompt
-      // and any pre-existing accumulation heals. Otherwise leave the prior
-      // snapshot untouched so real history from an earlier active session
-      // survives an idle reopen instead of being overwritten.
+      // replayed history plus fresh boot output, and re-saving that is exactly
+      // what grew idle tabs by one prompt per relaunch (#61572). Preserve the
+      // prior snapshot byte-for-byte; legacy text is ambiguous and must not be
+      // auto-deleted merely because it resembles a prompt.
       if (!hasSessionActivityRef.current) {
-        if (isIdlePromptOnly(initialReviveBufferRef.current ?? '')) {
-          updateTerminalReviveBuffer(id, '')
-        }
-
         return
       }
 
       try {
-        const snapshot = serialize.serialize({ scrollback: PERSISTENT_SESSION_SCROLLBACK })
-        updateTerminalReviveBuffer(id, cleanReviveSnapshot(snapshot))
+        if (term.buffer.active.type !== 'normal' || !liveStartMarker) {
+          return
+        }
+
+        const normal = term.buffer.normal
+        const cursorLine = normal.baseY + normal.cursorY
+        let lastContentLine = normal.length - 1
+
+        while (lastContentLine > cursorLine && !normal.getLine(lastContentLine)?.translateToString(true)) {
+          lastContentLine -= 1
+        }
+
+        // `normal.length` includes blank viewport rows below the cursor. A range
+        // budget based on that capacity can start after the cursor and serialize
+        // nothing (for example after a tall resize). The cursor is the live end;
+        // if real content exists below it, provenance is uncertain and falls back.
+        const end = cursorLine
+
+        const liveWindow = resolveLiveSnapshotWindow(
+          liveStartMarker.line,
+          end,
+          cursorLine,
+          PERSISTENT_SESSION_SCROLLBACK,
+          term.markers.includes(liveStartMarker) && lastContentLine <= cursorLine
+        )
+
+        let restored = initialReviveBuffer
+        let live: string
+        let nextSnapshot: string
+
+        if (liveWindow) {
+          // Once live output alone exceeds the replay budget, the restored prefix
+          // has scrolled out and should no longer be carried into future sessions.
+          if (!liveWindow.keepRestored) {
+            restored = ''
+          }
+
+          live = serialize.serialize({ excludeAltBuffer: true, range: { end, start: liveWindow.start } })
+          nextSnapshot = mergeReviveSnapshot(restored, live, shellNameRef.current, liveWindow.keepRestored)
+        } else {
+          // A reset, clear-screen, or scrollback trim can invalidate the logical
+          // boundary. The current normal buffer is then authoritative, but its
+          // restored/live provenance is unknown, so persist it without text-based
+          // greeting or prompt cleanup rather than risk deleting real output.
+          live = serialize.serialize({ excludeAltBuffer: true, scrollback: PERSISTENT_SESSION_SCROLLBACK })
+          nextSnapshot = live
+        }
+
+        updateTerminalReviveBuffer(id, nextSnapshot)
       } catch {
         // Best-effort restore: never let serialization break a live terminal.
       }
@@ -721,9 +850,9 @@ export function useTerminalSession({
     // never inject Ctrl-L or other cleanup keystrokes into the user's shell.
     let stripLeading = true
 
-    const armedWrite = (data: string) => {
+    const armedWrite = (data: string, onParsed: () => void) => {
       if (!stripLeading) {
-        term.write(data)
+        term.write(data, onParsed)
 
         return
       }
@@ -737,14 +866,14 @@ export function useTerminalSession({
         const controls = keepEscapeSequences(next)
 
         if (controls) {
-          term.write(controls)
+          term.write(controls, onParsed)
         }
 
         return
       }
 
       stripLeading = false
-      term.write(next)
+      term.write(next, onParsed)
     }
 
     const fitAndResize = (visible: boolean) => {
@@ -769,16 +898,64 @@ export function useTerminalSession({
 
     fitRef.current = fitAndResize
 
-    const dataDisposable = term.onData(data => {
+    // `onData` also carries xterm-generated replies to DSR/CPR/DA queries during
+    // shell startup. Treat only real key events (plus explicit paste/drop/inject
+    // paths below) as user activity, or an untouched refresh re-saves boot rows.
+    const keyDisposable = term.onKey(() => {
       hasSessionActivityRef.current = true
+    })
+
+    const onCompositionStart = () => {
+      hasSessionActivityRef.current = true
+    }
+
+    const onBeforeInput = () => {
+      hasSessionActivityRef.current = true
+    }
+
+    const onPointerActivity = (event: PointerEvent) => {
+      if (event.button === 1 || term.modes.mouseTrackingMode !== 'none') {
+        hasSessionActivityRef.current = true
+      }
+    }
+
+    const onWheelActivity = () => {
+      if (term.modes.mouseTrackingMode !== 'none') {
+        hasSessionActivityRef.current = true
+      }
+    }
+
+    host.addEventListener('beforeinput', onBeforeInput)
+    host.addEventListener('compositionstart', onCompositionStart)
+    host.addEventListener('pointerdown', onPointerActivity)
+    host.addEventListener('wheel', onWheelActivity)
+
+    const dataDisposable = term.onData(data => {
+      if (replayWrites) {return}
       const id = sessionIdRef.current
+
+      if (!id && retrySession && data === '\r') {
+        const retry = retrySession
+        retrySession = null
+        setStatus('starting')
+        retry()
+
+        return
+      }
 
       if (id) {
         void terminalApi.write(id, data)
       }
     })
 
-    cleanup.push(() => dataDisposable.dispose())
+    cleanup.push(
+      () => keyDisposable.dispose(),
+      () => dataDisposable.dispose(),
+      () => host.removeEventListener('beforeinput', onBeforeInput),
+      () => host.removeEventListener('compositionstart', onCompositionStart),
+      () => host.removeEventListener('pointerdown', onPointerActivity),
+      () => host.removeEventListener('wheel', onWheelActivity)
+    )
 
     const selectionDisposable = term.onSelectionChange(() => {
       const next = term.getSelection()
@@ -848,19 +1025,53 @@ export function useTerminalSession({
       return false
     })
 
-    const startSession = () =>
+    let cleanupAttempt: (() => void) | null = null
+
+    const startSession = () => {
+      cleanupAttempt?.()
+      let current = true
+      let attemptSessionId: string | null = null
+
+      const releaseSession = (sid: string) => persistent && terminalApi.detach
+        ? terminalApi.detach(sid) : terminalApi.dispose(sid)
+
+      const subscriptions: Array<() => void> = []
+
+      const release = () => {
+        current = false
+        subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
+
+        if (attemptSessionId) {
+          const sid = attemptSessionId
+          attemptSessionId = null
+
+          if (sessionIdRef.current === sid) {
+            sessionIdRef.current = null
+          }
+
+          void releaseSession(sid)
+        }
+      }
+
+      cleanupAttempt = release
+
       void terminalApi
-        // Prefer the prior session's last cwd so a reopened tab lands where the
-        // user last `cd`'d; the main side falls back to the launch cwd (then
-        // home) if that dir no longer exists.
-        .start({ cols: term.cols, cwd: initialRestoreCwdRef.current || cwd, rows: term.rows })
+        // Prefer the last observed cwd so retry/relaunch stays in the same directory.
+        .start({ cols: term.cols, cwd: lastObservedCwdRef.current || initialRestoreCwdRef.current || cwd, rows: term.rows, restoreKey: id, resumeOnly })
         .then(async session => {
-          if (disposed) {
-            void terminalApi.dispose(session.id)
+          persistent = Boolean(session.persistent)
+          resumeOnly = persistent
+
+          if (persistent) {markTerminalPersistent(id)}
+
+          if (disposed || !current) {
+            void releaseSession(session.id)
 
             return
           }
 
+          restoreHistory()
+          attemptSessionId = session.id
           sessionIdRef.current = session.id
           lastSentSize = { cols: term.cols, rows: term.rows }
           shellNameRef.current = session.shell || 'shell'
@@ -871,24 +1082,74 @@ export function useTerminalSession({
           selectionRef.current = initial
           selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
 
-          cleanup.push(
-            terminalApi.onData(session.id, data => {
-              armedWrite(data)
-              scheduleSnapshot()
-            }),
-            terminalApi.onExit(session.id, () => {
-              // Shell exited (`exit` / Ctrl-D / crash) — drop the tab like a real
-              // terminal. closeTerminal hides the pane when it's the last one.
-              // Skip if we're tearing down (cleanup disposes the PTY) OR the app
-              // is quitting/reloading: on quit the main process kills every PTY,
-              // firing this exit, but React skips the cleanup so `disposed` stays
-              // false — running closeTerminal here would wipe the persisted tabs
-              // right before relaunch restores them.
-              if (!disposed && !appTearingDown) {
-                closeTerminal(id)
+          subscriptions.push(
+            terminalApi.onData(session.id, (data, options) => {
+              if (!current || disposed) {return}
+
+              if (options?.replay) {
+                ++replayWrites
+                term.write(data, () => { --replayWrites })
+              } else if (persistent) {
+                term.write(data)
+              } else {
+                armedWrite(data, scheduleSnapshot)
               }
+            }),
+            terminalApi.onExit(session.id, exit => {
+              if (!current || disposed || appTearingDown) {
+                return
+              }
+
+              release()
+
+              if (persistent && exit.signal) {
+                setStatus('closed')
+
+                const messages: Record<string, string> = {
+                  disconnected: 'Terminal disconnected. Press Enter to reconnect to the same shell.',
+                  expired: 'Terminal expired or exited. Press Enter to create a new shell.',
+                  superseded: 'Terminal is attached in another window. Press Enter to take it back.',
+                  denied: 'Terminal access denied. Check your sign-in and profile, then press Enter to retry.',
+                  capacity: 'Terminal capacity reached. Close another terminal, then press Enter to retry.'
+                }
+
+                resumeOnly = exit.signal !== 'expired'
+                retrySession = startSession
+                term.write(`\r\n${messages[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}\r\n`)
+
+                return
+              }
+
+              if (exit.signal === 'disconnected') {
+                setStatus('closed')
+                retrySession = startSession
+                term.write('\r\nTerminal disconnected. Press Enter to start a new shell; scrollback is preserved.\r\n')
+
+                return
+              }
+
+              // Only a current process exit removes the persisted tab.
+              removeExitedTerminal(id)
             })
           )
+
+          if (persistent && terminalApi.onState) {
+            subscriptions.push(terminalApi.onState(session.id, state => {
+              if (!current || disposed || appTearingDown) {return}
+              setStatus(state === 'disconnected' ? 'closed' : state)
+
+              if (state === 'reconnecting') {
+                term.write('\r\nTerminal disconnected. Reconnecting to the same shell…\r\n')
+              }
+            }))
+          }
+
+          // onExit may replay a buffered exit before returning its unsubscribe.
+          if (!current) {
+            release()
+
+            return
+          }
 
           const attached = await terminalApi.attach(session.id)
 
@@ -896,16 +1157,36 @@ export function useTerminalSession({
             throw new Error('Terminal session disappeared before its output stream attached')
           }
 
-          setStatus('open')
+          if (disposed || !current) {
+            return
+          }
+
+          if (!persistent) {setStatus('open')}
 
           window.requestAnimationFrame(() => {
-            term.clearSelection() // drop any selection painted over transient boot rows
+            if (current && !disposed) {
+              term.clearSelection()
+            }
           })
         })
         .catch(error => {
+          if (disposed || !current) {
+            return
+          }
+
+          release()
+          retrySession = startSession
           setStatus('closed')
-          term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}\r\n`)
+          const expired = error && typeof error === 'object' && 'signal' in error && error.signal === 'expired'
+
+          if (expired) {
+            resumeOnly = false
+            term.write('Terminal expired or exited. Press Enter to create a new shell.\r\n')
+          } else {
+            term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}. Press Enter to retry.\r\n`)
+          }
         })
+    }
 
     // Open + fit + start only once webfonts settle. Fitting with fallback metrics
     // picks the wrong row count, the shell boots at that size, then the real font
@@ -936,7 +1217,11 @@ export function useTerminalSession({
 
       fitAndResize(initialActiveRef.current)
       initialActiveFitRef.current = initialActiveRef.current
-      startSession()
+      void (terminalApi.detach ? Promise.resolve() : historyReady).then(() => {
+        if (!disposed && host.isConnected) {
+          startSession()
+        }
+      })
     }
 
     void prepareTerminalFontFamily(
@@ -954,15 +1239,9 @@ export function useTerminalSession({
     return () => {
       disposed = true
       mountedRef.current = false
+      cleanupAttempt?.()
       cleanup.forEach(run => run())
       fitRef.current = null
-
-      const id = sessionIdRef.current
-      sessionIdRef.current = null
-
-      if (id) {
-        void terminalApi.dispose(id)
-      }
 
       term.dispose()
       termRef.current = null
@@ -973,7 +1252,7 @@ export function useTerminalSession({
     }
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
-    // closeTerminal(id) call in onExit.
+    // removeExitedTerminal(id) call in onExit.
   }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
 
   useEffect(() => {

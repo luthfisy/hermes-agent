@@ -609,12 +609,30 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Home paths whose directory skeleton was created this process. Only successful passes are
-# recorded, so a raised managed-mode/missing-profile error keeps re-checking on later loads.
-_HERMES_HOME_ENSURED: set = set()
+# Named homes need a persisted generation: filesystems can reuse inode and ctime together.
+_HERMES_HOME_ENSURED: dict[str, tuple[int, int, int, str | None]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
+
+
+def _hermes_home_identity(
+    home: Path, *, named_profile: bool,
+) -> tuple[int, int, int, str | None] | None:
+    try:
+        value = home.stat()
+        incarnation = None
+        if named_profile:
+            from hermes_cli.profile_incarnation import read_profile_incarnation
+
+            incarnation = read_profile_incarnation(home)
+            # Legacy homes remain usable, but cannot prove a reusable cache identity.
+            # Do not backfill here: config reads must not acquire the lifecycle lock.
+            if incarnation is None:
+                return None
+    except OSError:
+        return None
+    return (value.st_dev, value.st_ino, value.st_ctime_ns if named_profile else 0, incarnation)
 
 
 def ensure_hermes_home():
@@ -626,9 +644,14 @@ def ensure_hermes_home():
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
     # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
-    assert_named_profile_home_live(home)
-    if key in _HERMES_HOME_ENSURED and home.is_dir():
+    from hermes_constants import named_profile_home_is_unavailable, profile_deletion_marker_path
+    named_profile = profile_deletion_marker_path(home) is not None
+    if named_profile_home_is_unavailable(home):
+        raise FileNotFoundError(
+            f"Named profile home does not exist because it is missing or being deleted: {home}. "
+            "Create the profile explicitly before using it.")
+    current_identity = _hermes_home_identity(home, named_profile=named_profile)
+    if current_identity is not None and _HERMES_HOME_ENSURED.get(key) == current_identity:
         return
     from hermes_cli.config_home import initialize_home
     initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
@@ -2097,15 +2120,25 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     return loaded
 
 
-def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None) -> None:
+def atomic_config_write(
+    config_path: Path, data: Dict[str, Any], *,
+    extra_content_on_create: Optional[str] = None, create_parent: Optional[bool] = None,
+) -> None:
     """THE ``config.yaml`` writer: fail-closed (``require_readable_config_before_write``) and
     comment-preserving (ruamel round-trip merge of *data* onto the on-disk document). Every code
     path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
     bookkeeping, gateway/TUI RPCs, auth resets — goes through here; a PyYAML dump of a config
     path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554)."""
+    from hermes_constants import profile_deletion_marker_path
     from utils import atomic_roundtrip_yaml_save
 
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    if create_parent is None:
+        # A stale writer must never recreate a lifecycle-owned named home.
+        create_parent = profile_deletion_marker_path(config_path.parent) is None
+    atomic_roundtrip_yaml_save(
+        config_path, data, extra_content_on_create=extra_content_on_create,
+        create_parent=create_parent,
+    )
 
 
 def load_config() -> Dict[str, Any]:
@@ -2335,6 +2368,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             _, fast_sig = _load_config_cache_sig(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
             if hit is not None:
+                # YAML freshness cannot prove the named home's generation is live.
+                # Keep the lifecycle check without waiting on the config writer lock.
+                ensure_hermes_home()
                 return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
         # Any surprise here falls through to the locked path, which is the

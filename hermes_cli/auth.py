@@ -587,6 +587,36 @@ def _kernel_lock(lock_file: Any, acquire: bool) -> None:
         msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1)
 
 
+def _ensure_auth_write_parent(path: Path) -> None:
+    """Prepare an auth/config parent without recreating a named profile home."""
+    from hermes_constants import (
+        mkdir_under_hermes_home,
+        named_profile_home_is_unavailable,
+        profile_deletion_marker_path,
+    )
+
+    home = Path(get_hermes_home())
+    parent = path.parent
+    marker = profile_deletion_marker_path(home)
+    if marker is None:
+        mkdir_under_hermes_home(parent)
+        return
+    try:
+        parent.relative_to(home)
+    except ValueError:
+        # Explicit global/shared stores are outside the active named home.
+        mkdir_under_hermes_home(parent)
+        return
+    if named_profile_home_is_unavailable(home):
+        raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+    if parent != home and not parent.is_dir():
+        # Never create the managed profile root itself. Nested auth directories
+        # may be created only while their already-published parent exists.
+        parent.mkdir(parents=False, exist_ok=True)
+    if not home.is_dir() or named_profile_home_is_unavailable(home):
+        raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+
+
 @contextmanager
 def _file_lock(
     lock_path: Path, holder: threading.local, timeout_seconds: float, timeout_message: str):
@@ -603,7 +633,7 @@ def _file_lock(
             holder.depth -= 1
         return
 
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_auth_write_parent(lock_path)
     with ExitStack() as stack:
         lock_file = None
         if fcntl is not None or msvcrt is not None:
@@ -709,10 +739,9 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 def _save_private_json(target: Path, data: Any, *, fsync_dir: bool = False, **dump_kwargs: Any) -> None:
     """0600 credential JSON under a 0700 parent (``secure_parent_dir`` refuses ``/``, top-level dirs
     and the install tree). ``atomic_json_write`` creates the temp file 0600 before any byte lands."""
-    from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(target.parent)
+    _ensure_auth_write_parent(target)
     secure_parent_dir(target)
-    atomic_json_write(target, data, mode=0o600, fsync_dir=fsync_dir, **dump_kwargs)
+    atomic_json_write(target, data, mode=0o600, fsync_dir=fsync_dir, create_parent=False, **dump_kwargs)
 
 
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
@@ -2209,7 +2238,7 @@ def _update_config_for_provider(
         _save_auth_store(auth_store)
 
     config_path = get_config_path()
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_auth_write_parent(config_path)
     require_readable_config_before_write(config_path)
     config = read_raw_config()
     current_model = config.get("model")
@@ -2237,7 +2266,7 @@ def _update_config_for_provider(
     elif clear_default:
         model_cfg.pop("default", None)
     config["model"] = model_cfg
-    atomic_config_write(config_path, config)
+    atomic_config_write(config_path, config, create_parent=False)
     return config_path
 
 
@@ -2281,7 +2310,7 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    atomic_config_write(config_path, config)
+    atomic_config_write(config_path, config, create_parent=False)
     return config_path
 
 
