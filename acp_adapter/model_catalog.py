@@ -230,7 +230,7 @@ class _ModelCatalog:
                 self.empty_authoritative.add(str(named_slug).strip().lower())
                 continue
             for named_model, named_desc in named_catalog:
-                is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
+                is_current = self.semantic(named_slug) == self.semantic(current_choice_provider) and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
                 self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
 
