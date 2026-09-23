@@ -130,6 +130,23 @@ class TestAdapterInit:
         assert adapter._hass_token == "config-token"
         assert adapter._hass_url == "http://192.168.1.50:8123"
 
+    def test_notify_service_from_config_and_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_NOTIFY_SERVICE", "mobile_app_pixel")
+        adapter = HomeAssistantAdapter(PlatformConfig(enabled=True, token="t"))
+        assert adapter._notify_service == "mobile_app_pixel"
+
+        adapter = HomeAssistantAdapter(PlatformConfig(
+            enabled=True, token="t", extra={"notify_service": "notify.mobile_app_iphone"}
+        ))
+        assert adapter._notify_service == "mobile_app_iphone"
+
+    def test_invalid_notify_service_falls_back_to_persistent_notification(self, caplog):
+        adapter = HomeAssistantAdapter(PlatformConfig(
+            enabled=True, token="t", extra={"notify_service": "notify.mobile/app"}
+        ))
+        assert adapter._notify_service == ""
+        assert "Ignoring invalid Home Assistant notify service" in caplog.text
+
 
     def test_watch_filters_parsed(self):
         config = PlatformConfig(
@@ -238,6 +255,7 @@ class TestConfigIntegration:
     def test_env_override_creates_ha_platform(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "env-token")
         monkeypatch.setenv("HASS_URL", "http://10.0.0.5:8123")
+        monkeypatch.setenv("HASS_NOTIFY_SERVICE", "notify.mobile_app_iphone")
         # Clear other platform tokens
         for v in ["TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN"]:
             monkeypatch.delenv(v, raising=False)
@@ -250,6 +268,7 @@ class TestConfigIntegration:
         assert ha.enabled is True
         assert ha.token == "env-token"
         assert ha.extra["url"] == "http://10.0.0.5:8123"
+        assert ha.extra["notify_service"] == "notify.mobile_app_iphone"
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +319,19 @@ class TestSendViaRestApi:
         assert call_args[1]["json"]["title"] == "Hermes Agent"
         assert call_args[1]["json"]["message"] == "Test notification"
         assert "Bearer tok" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    async def test_send_uses_configured_notify_service(self):
+        adapter = _make_adapter(notify_service="notify.mobile_app_iphone")
+        mock_session = self._mock_aiohttp_session(200)
+
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
+            mock_aiohttp.ClientTimeout = lambda total: total
+            result = await adapter.send("ha_events", "Test notification")
+
+        assert result.success is True
+        assert "/api/services/notify/mobile_app_iphone" in mock_session.post.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------
