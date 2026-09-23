@@ -90,6 +90,16 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
+  it('keeps multi-line approval reasons readable', () => {
+    const description = 'Before:\nold value\nAfter:\nnew value'
+    setApprovalRequest({ command: 'apply changes', description, requestId: 'apr-1', sessionId: 'sess-1' })
+    render(<PendingApprovalStack />)
+
+    const descriptionElement = screen.getByText(description)
+    expect(descriptionElement.className).toContain('whitespace-pre-wrap')
+    expect(descriptionElement.className).toContain('overflow-auto')
+  })
+
   it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     const respond = liveApproval()
