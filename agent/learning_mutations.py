@@ -56,11 +56,62 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     return path, chunks, local
 
 
-def _write_memory(path: Path, chunks: list[str]) -> None:
-    """Atomic temp-file + rename via the memory tool, so a concurrent reader
-    never sees a half-written file (and the §-join stays single-sourced)."""
-    from tools.memory_tool import MemoryStore
-    MemoryStore._write_file(path, [c.strip() for c in chunks if c.strip()])
+def _resolve_occurrence(entries: list[str], expected: str, local: int) -> int | None:
+    """Index of the clicked entry in the freshly read list, or None when it cannot be named.
+
+    The position wins while it still holds the expected text — that is the occurrence the user
+    clicked, and identical entries are separate cards. A shifted list is resolved by text only
+    when exactly one entry carries it; with several copies and a moved position there is no way
+    to tell them apart, so the caller refuses instead of editing an arbitrary one.
+    """
+    if 0 <= local < len(entries) and entries[local] == expected:
+        return local
+    matches = [i for i, entry in enumerate(entries) if entry == expected]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _memory_target(source: str) -> str:
+    """Journey's node-id source -> the memory tool's target name."""
+    return "user" if source == "profile" else "memory"
+
+
+def _apply_memory_mutation(node_id: str, apply_change, done: str) -> dict[str, Any]:
+    """Run a Journey memory edit/delete through ``MemoryStore._mutate``.
+
+    Journey used to read the file, change one entry and write the WHOLE file back with no
+    lock and no drift check. Two losses followed. A memory the agent stored in between —
+    an ordinary ``memory_tool`` add during a live turn — was dropped by the stale rewrite,
+    with no ``.bak`` and nothing to restore it from. And a file edited outside the tool was
+    rewritten rather than snapshotted and refused, which is exactly what the drift guard
+    exists to prevent (#26045). ``_mutate`` holds the same cross-process lock the memory
+    tool takes, re-reads under it, and keeps that guard.
+
+    The entry is addressed by POSITION first — Journey's card identity is an occurrence, and two
+    identical entries are two cards — and re-checked against the text captured from the graph the
+    user clicked. When the list shifted under the lock, a single occurrence of that text is
+    unambiguous and is used instead. When the text is gone, or it occurs more than once and the
+    position no longer holds it, the mutation refuses rather than guessing.
+
+    ``dedupe=False`` keeps ``_mutate`` from collapsing identical entries on the reload: that
+    collapse renumbers the very list being rewritten, so an occurrence-addressed edit would land on
+    the first copy and persist the collapse, silently dropping a card the user never touched.
+    """
+    from tools.memory_tool import load_on_disk_store
+
+    source, _ = _parse_memory_id(node_id)
+    path, chunks, local = _locate_memory(node_id)
+    expected = chunks[local]
+
+    def _mutate(entries: list[str], _limit: int):
+        index = _resolve_occurrence(entries, expected, local)
+        if index is None:
+            return {"success": False, "error": "memory node id is stale — refresh the graph"}
+        return apply_change(list(entries), index)
+
+    result = load_on_disk_store()._mutate(_memory_target(source), _mutate, dedupe=False)
+    if result.get("success"):
+        return {"ok": True, "message": f"{done} {path.name}"}
+    return {"ok": False, "message": str(result.get("error") or "memory write failed")}
 
 
 def _clear_skill_cache() -> None:
@@ -125,10 +176,11 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
-    path, chunks, local = _locate_memory(node_id)
-    del chunks[local]
-    _write_memory(path, chunks)
-    return {"ok": True, "message": f"deleted memory from {path.name}"}
+    def _apply(entries: list[str], index: int):
+        del entries[index]
+        return entries, "deleted"
+
+    return _apply_memory_mutation(node_id, _apply, "deleted memory from")
 
 
 # ── Edit ────────────────────────────────────────────────────────────────────
@@ -151,7 +203,8 @@ def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
-    path, chunks, local = _locate_memory(node_id)
-    chunks[local] = body
-    _write_memory(path, chunks)
-    return {"ok": True, "message": f"updated memory in {path.name}"}
+    def _apply(entries: list[str], index: int):
+        entries[index] = body
+        return entries, "updated"
+
+    return _apply_memory_mutation(node_id, _apply, "updated memory in")
