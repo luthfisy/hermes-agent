@@ -3550,6 +3550,7 @@ export interface Translations {
     closePane: string
     loading: string
     unavailable: string
+    fileGoneBody: string
     opening: string
     hide: string
     openPreview: string
