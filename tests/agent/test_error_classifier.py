@@ -2160,3 +2160,17 @@ class TestAuthErrorNamesOffRouteEndpoint:
         for base_url in ("", "https://api.anthropic.com/v1"):
             result = classify_api_error(e, provider="anthropic", model="claude", base_url=base_url)
             assert result.message == "API keys are not supported by this endpoint.", base_url
+
+@pytest.mark.parametrize("status", [None, 402, 429])
+@pytest.mark.parametrize("message, transient", [
+    ("You've hit your session limit · resets 5:20pm (America/New_York)", True),
+    ("API call failed after 2 retries. Session limit · reset at 9:00", True),
+    ("You've hit your session limit", False),
+    ("Your trial quota never resets — upgrade to continue", False),
+    ("Usage limit exceeded. The free plan resets monthly; upgrade.", False),
+])
+def test_session_limit_requires_concrete_reset_signal(status, message, transient):
+    result = classify_api_error(MockAPIError(message, status_code=status), provider="claude-acp")
+    assert result.reason == (FailoverReason.rate_limit if transient else FailoverReason.billing)
+    assert result.retryable is transient
+    assert result.should_fallback is True
